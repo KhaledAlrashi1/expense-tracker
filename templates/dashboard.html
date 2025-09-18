@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Expense Tracker — Dashboard</title>
+    <style>
+      :root { --max: 1200px; }
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; margin: 0; background:#0b1220; color:#e8eefc; overflow-x:hidden; }
+      header { padding: 22px 16px; background: #0e1a33; border-bottom: 1px solid #1f2a44; display:flex; align-items:center; gap:18px; }
+      header h1 { font-size: 20px; margin: 0; letter-spacing: 0.2px; }
+      header nav a { color:#8ab4ff; text-decoration:none; font-size:14px; }
+      header nav a:hover { text-decoration:underline; }
+      main { max-width: min(var(--max), 100vw); margin: 0 auto; padding: 24px 16px 48px; }
+
+      /* KPI cards */
+      .kpis { display:grid; grid-template-columns: 1fr; gap: 14px; margin-bottom: 16px; }
+      @media (min-width: 800px) { .kpis { grid-template-columns: repeat(3, 1fr); } }
+      .kpi { background:#111a2e; border:1px solid #1f2a44; border-radius:14px; padding:14px 16px; box-shadow: 0 6px 20px rgba(0,0,0,0.25); }
+      .kpi .label { font-size:12px; color:#9fb0d9; margin-bottom:6px; }
+      .kpi .value { font-size:28px; font-weight:700; letter-spacing:0.2px; }
+      .kpi .sub { font-size:12px; color:#9fb0d9; margin-top:4px; }
+
+      /* Charts */
+      .grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+      @media (min-width: 900px) { .grid { grid-template-columns: 1fr 1fr; } }
+      .card { background: #111a2e; border: 1px solid #1f2a44; border-radius: 14px; padding: 16px; box-shadow: 0 6px 20px rgba(0,0,0,0.25); }
+      .card h2 { font-size: 16px; margin: 0 0 10px; font-weight: 600; color:#c6d4ff; }
+      canvas { width: 100%; height: 340px; }
+      .empty { padding: 12px 14px; border-radius: 10px; background: #0b1327; border:1px dashed #2a3c67; color:#9fb0d9; }
+
+      .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); border:0; }
+    </style>
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" crossorigin="anonymous"></script>
+  </head>
+  <body>
+    <header>
+      <h1>Expense Tracker</h1>
+      <nav><a href="/transactions">Add & View Transactions →</a></nav>
+    </header>
+    <main>
+      <!-- KPI row -->
+      <section class="kpis" aria-label="Key figures for current month">
+        <div class="kpi">
+          <div class="label">Total Spent (MTD)</div>
+          <div class="value" id="kpi-total">KD 0.000</div>
+          <div class="sub" id="kpi-total-sub"></div>
+        </div>
+        <div class="kpi">
+          <div class="label">Avg / Day (MTD)</div>
+          <div class="value" id="kpi-avg">KD 0.000</div>
+          <div class="sub" id="kpi-avg-sub"></div>
+        </div>
+        <div class="kpi">
+          <div class="label">Top Category (MTD)</div>
+          <div class="value" id="kpi-topcat">—</div>
+          <div class="sub" id="kpi-topcat-sub"></div>
+        </div>
+      </section>
+
+      <div class="grid">
+        <section class="card">
+          <h2>Spend by Category</h2>
+          <div id="cat-empty" class="empty" hidden>No data yet. Add transactions on the Transactions page.</div>
+          <canvas id="catChart" aria-label="Spend by category" role="img"></canvas>
+        </section>
+        <section class="card">
+          <h2>Spend by Month</h2>
+          <div id="month-empty" class="empty" hidden>No data yet. Add transactions on the Transactions page.</div>
+          <canvas id="monthChart" aria-label="Spend by month" role="img"></canvas>
+        </section>
+      </div>
+    </main>
+
+    <script>
+      function fmt(n){ return (Number(n)||0).toFixed(3); }
+      function monthKey(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; }
+
+      async function fetchJSON(url){
+        const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+        if(!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      }
+
+      function ensureChart(ctx, cfg){
+        if(!ctx) return null;
+        try { return new Chart(ctx, cfg); } catch(e){ console.error(e); return null; }
+      }
+
+      (async () => {
+        const now = new Date();
+        const mk = monthKey(now);
+        const daysElapsed = now.getDate();
+
+        // ---- KPIs computed client‑side from /api/transactions ----
+        try {
+          const all = await fetchJSON('/api/transactions');
+          const mtx = all.filter(t => (t.date||'').slice(0,7) === mk);
+          const total = mtx.reduce((s,t)=> s + (Number(t.amount_kd)||0), 0);
+          const avg = daysElapsed > 0 ? total / daysElapsed : 0;
+          const byCat = {};
+          for(const t of mtx){ byCat[t.category] = (byCat[t.category]||0) + (Number(t.amount_kd)||0); }
+          const [topCat, topVal] = Object.entries(byCat).sort((a,b)=> b[1]-a[1])[0] || ['—', 0];
+
+          document.getElementById('kpi-total').textContent = `KD ${fmt(total)}`;
+          document.getElementById('kpi-total-sub').textContent = mk;
+          document.getElementById('kpi-avg').textContent = `KD ${fmt(avg)}`;
+          document.getElementById('kpi-avg-sub').textContent = `${daysElapsed} day(s) so far`;
+          document.getElementById('kpi-topcat').textContent = topCat;
+          document.getElementById('kpi-topcat-sub').textContent = topCat === '—' ? '' : `KD ${fmt(topVal)} in ${mk}`;
+        } catch (e) {
+          console.error('KPI load failed', e);
+        }
+
+        // ---- Spend by Category (overall) ----
+        try {
+          const data = await fetchJSON('/api/spend-by-category');
+          const labels = Object.keys(data);
+          const values = Object.values(data);
+          const emptyEl = document.getElementById('cat-empty');
+          if(values.length === 0){ emptyEl.hidden = false; }
+          const ctx = document.getElementById('catChart');
+          ensureChart(ctx, {
+            type: 'doughnut',
+            data: { labels, datasets: [{ label: 'KD', data: values }] },
+            options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
+          });
+        } catch (e) { console.error(e); document.getElementById('cat-empty').hidden = false; }
+
+        // ---- Spend by Month (overall) ----
+        try {
+          const list = await fetchJSON('/api/spend-by-month');
+          const labels = list.map(r => r.month);
+          const values = list.map(r => r.total_kd);
+          const emptyEl = document.getElementById('month-empty');
+          if(values.length === 0){ emptyEl.hidden = false; }
+          const ctx = document.getElementById('monthChart');
+          ensureChart(ctx, {
+            type: 'bar',
+            data: { labels, datasets: [{ label: 'KD', data: values }] },
+            options: {
+              responsive: true,
+              plugins: { legend: { display: false } },
+              scales: { y: { beginAtZero: true } }
+            }
+          });
+        } catch (e) { console.error(e); document.getElementById('month-empty').hidden = false; }
+      })();
+    </script>
+  </body>
+</html>

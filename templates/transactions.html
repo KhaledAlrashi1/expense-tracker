@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Expense Tracker — Transactions</title>
+    <style>
+      :root { --max: 1200px; }
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 0; background:#0b1220; color:#e8eefc; overflow-x: hidden; }
+      header { padding: 22px 16px; background: #0e1a33; border-bottom: 1px solid #1f2a44; }
+      h1 { font-size: 20px; margin: 0; letter-spacing: 0.2px; }
+      a { color: #8ab4ff; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      main { max-width: min(var(--max), 100vw); margin: 0 auto; padding: 24px 16px 48px; }
+
+      /* Two-column layout that can actually shrink without pushing off-screen */
+      .grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+      @media (min-width: 1100px) { .grid { grid-template-columns: minmax(0,1fr) minmax(0,1fr); } }
+
+      .card { background: #111a2e; border: 1px solid #1f2a44; border-radius: 14px; padding: 16px; box-shadow: 0 6px 20px rgba(0,0,0,0.25); min-width: 0; }
+      .card h2 { font-size: 16px; margin: 0 0 10px; font-weight: 600; color:#c6d4ff; }
+
+      /* Form */
+      .form { display: grid; grid-template-columns: 1fr; gap: 12px; }
+      .row { display: grid; grid-template-columns: 1fr; gap: 12px; }
+      @media (min-width: 900px) { .row { grid-template-columns: 170px 1fr 1fr 150px; } }
+      label { display: flex; flex-direction: column; font-size: 13px; color:#9fb0d9; gap: 6px; min-width: 0; }
+      input[type="text"], input[type="number"], input[type="date"], select {
+        background:#0b1327; color:#e8eefc; border:1px solid #2a3c67; border-radius: 10px; padding: 10px 12px; font-size: 14px; width: 100%; box-sizing: border-box;
+      }
+      .actions { display: flex; gap: 10px; align-items:center; flex-wrap: wrap; }
+      button { background:#2b63ff; color:white; border:0; padding: 10px 14px; border-radius: 10px; font-weight: 600; cursor: pointer; }
+      .btn { background:#2b63ff; color:white; border:0; padding: 8px 12px; border-radius: 10px; font-weight: 600; cursor: pointer; }
+      .btn:hover, button:hover { filter: brightness(1.05); }
+      .danger { background:#7a2c2c; }
+      .muted { color:#9fb0d9; font-size: 14px; margin:6px 0 0; }
+      .flash { padding: 10px 12px; border-radius: 10px; margin: 10px 0 0; }
+      .flash.success { background:#0f2a18; border:1px solid #1f6c3d; color:#b8f3cf; }
+      .flash.danger  { background:#2a1111; border:1px solid #6c1f1f; color:#f3b8b8; }
+
+      /* Table */
+      .table-wrap { overflow: hidden auto; max-height: 520px; }
+      table { width: 100%; border-collapse: collapse; }
+      thead th { text-align: left; font-weight: 700; font-size: 13px; color:#9fb0d9; padding: 10px 8px; border-bottom: 1px solid #1f2a44; white-space: nowrap; }
+      tbody td { padding: 10px 8px; border-bottom: 1px dashed #1f2a44; font-size: 14px; vertical-align: top; }
+      tbody tr:hover { background:#0e1730; }
+      .right { text-align: right; }
+      .empty { padding: 12px 14px; border-radius: 10px; background: #0b1327; border:1px dashed #2a3c67; color:#9fb0d9; }
+      nav { margin-top: 8px; }
+
+      /* Column wrapping rules: keep short columns tight; let description wrap */
+      .col-date, .col-cat, .col-amt, .col-actions { white-space: nowrap; }
+      .col-actions { width: 1%; } /* shrink-to-fit */
+      .col-name { white-space: normal; word-break: break-word; overflow-wrap: anywhere; }
+
+      /* Manage categories */
+      .cat-inline { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin: 10px 0 6px; }
+      .cat-inline input { width: 220px; }
+
+      /* Import */
+      .upload-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+      input[type="file"]{ background:#0b1327; color:#e8eefc; border:1px solid #2a3c67; border-radius:10px; padding:8px; }
+      .hint { font-size:12px; color:#9fb0d9; margin-top:6px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Expense Tracker — Transactions</h1>
+      <nav class="muted"><a href="/">← Back to Dashboard</a></nav>
+    </header>
+
+    <main>
+      {% with msgs = get_flashed_messages(with_categories=True) %}
+        {% if msgs %}
+          {% for cat, msg in msgs %}
+            <div class="flash {{ cat }}">{{ msg }}</div>
+          {% endfor %}
+        {% endif %}
+      {% endwith %}
+
+      <!-- Category options template to reuse in edit forms -->
+      <template id="cat-options-template">
+        {% for c in categories %}
+          <option value="{{ c.name }}">{{ c.name }}</option>
+        {% endfor %}
+      </template>
+
+      <div class="grid">
+        <section class="card">
+          <h2>Add Transaction</h2>
+          <form class="form" method="post" action="{{ url_for('transactions') }}" novalidate>
+            <div class="row">
+              <label>
+                Date
+                <input type="date" name="date" id="date" value="{{ request.form.get('date','') }}" />
+              </label>
+              <label>
+                Category
+                <select name="category" id="category" required>
+                  {% if categories|length == 0 %}
+                    <option value="" disabled selected>— No categories —</option>
+                  {% endif %}
+                  {% for c in categories %}
+                    <option value="{{ c.name }}">{{ c.name }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>
+                Description
+                <input type="text" name="name" placeholder="What was this?" value="{{ request.form.get('name','') }}" required />
+              </label>
+              <label>
+                Amount (KD)
+                <input type="number" name="amount_kd" step="0.001" min="0" placeholder="0.000" value="{{ request.form.get('amount_kd','') }}" required />
+              </label>
+            </div>
+            <div class="actions">
+              <button type="submit">Add</button>
+              <a class="muted" href="/transactions">Reset</a>
+            </div>
+          </form>
+
+          <details class="card" style="margin-top:14px;">
+            <summary><strong>Manage Categories</strong></summary>
+
+            <!-- Add new category moved here -->
+            <div class="cat-inline">
+              <input type="text" id="new-cat" placeholder="New category" />
+              <button type="button" id="btn-add-cat" class="btn">Add</button>
+            </div>
+
+            {% if categories and categories|length > 0 %}
+              <div class="table-wrap" style="max-height: 300px;">
+                <table>
+                  <thead><tr><th>Name</th><th class="right">Actions</th></tr></thead>
+                  <tbody id="cat-tbody">
+                    {% for c in categories %}
+                      <tr data-cat-row="{{ c.id }}">
+                        <td class="col-name">{{ c.name }}</td>
+                        <td class="right col-actions">
+                          <form method="post" action="/categories/{{ c.id }}/delete" data-confirm="Delete category '{{ c.name }}'? This won't change existing transactions.">
+                            <button class="danger btn" type="submit">Delete</button>
+                          </form>
+                        </td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+            {% else %}
+              <div class="empty" style="margin-top:10px;">No categories yet. Add one above.</div>
+            {% endif %}
+          </details>
+
+          <section class="card" style="margin-top:14px;">
+            <h2>Import from CSV/Excel</h2>
+            <form method="post" action="/transactions/upload" enctype="multipart/form-data">
+              <div class="upload-row">
+                <input type="file" name="file" accept=".csv,.xlsx,.xls" required />
+                <button type="submit" class="btn">Upload</button>
+              </div>
+              <p class="hint">Required columns (header row): <strong>Date</strong>, <strong>Category</strong>, <strong>Transaction Description</strong>, <strong>Amount (KWD)</strong>.</p>
+            </form>
+          </section>
+        </section>
+
+        <section class="card">
+          <h2>Latest Transactions</h2>
+          {% if items and items|length > 0 %}
+            <div class="table-wrap">
+              <table id="txn-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Category</th>
+                    <th>Name</th>
+                    <th class="right">Amount (KD)</th>
+                    <th class="right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for t in items %}
+                    <tr
+                      data-txn-row="{{ t.id }}"
+                      data-json='{{ {
+                        "id": t.id,
+                        "date": (t.date.strftime("%Y-%m-%d") if t.date else ""),
+                        "category": t.category,
+                        "name": t.name,
+                        "amount": ("%.3f"|format(t.amount_kd))
+                      } | tojson }}'
+                    >
+                      <td class="col-date">{{ t.date.strftime('%Y-%m-%d') if t.date else '' }}</td>
+                      <td class="col-cat">{{ t.category }}</td>
+                      <td class="col-name">{{ t.name }}</td>
+                      <td class="right col-amt">{{ '%.3f'|format(t.amount_kd) }}</td>
+                      <td class="right col-actions">
+                        <button type="button" class="btn" data-edit>Edit</button>
+                        <form method="post" action="/transactions/{{ t.id }}/delete" data-confirm="Delete this transaction?">
+                          <button class="danger btn" type="submit">Delete</button>
+                        </form>
+                      </td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% else %}
+            <div class="empty">No transactions yet. Add your first one with the form on the left or import a file.</div>
+          {% endif %}
+          <p class="muted" style="margin-top:10px;">Only the most recent 100 are shown.</p>
+        </section>
+      </div>
+    </main>
+
+    <script>
+      // Default date to today if blank
+      (function() {
+        const el = document.getElementById('date');
+        if (el && !el.value) {
+          const now = new Date();
+          const mm = String(now.getMonth() + 1).padStart(2, '0');
+          const dd = String(now.getDate()).padStart(2, '0');
+          el.value = `${now.getFullYear()}-${mm}-${dd}`;
+        }
+      })();
+
+      // Confirm-before-submit helper for any form with data-confirm
+      document.addEventListener('submit', function(e){
+        const f = e.target.closest('form[data-confirm]');
+        if (f) {
+          const msg = f.getAttribute('data-confirm') || 'Are you sure?';
+          if (!confirm(msg)) { e.preventDefault(); }
+        }
+      });
+
+      // ----- Add Category (now inside Manage Categories) -----
+      const btnAddCat = document.getElementById('btn-add-cat');
+      if (btnAddCat) {
+        btnAddCat.addEventListener('click', async () => {
+          const input = document.getElementById('new-cat');
+          const name = (input.value || '').trim();
+          if (!name) return;
+          try {
+            const res = await fetch('/api/categories', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+              body: JSON.stringify({ name })
+            });
+            if (!res.ok && res.status !== 200) throw new Error('Failed to add');
+            const cat = await res.json();
+
+            // Update main Add form select
+            const sel = document.getElementById('category');
+            let opt = Array.from(sel.options).find(o => o.value.toLowerCase() === cat.name.toLowerCase());
+            if (!opt) { opt = document.createElement('option'); opt.value = cat.name; opt.textContent = cat.name; sel.appendChild(opt); }
+
+            // Update edit selects that are currently visible
+            document.querySelectorAll('select[data-edit-cat]').forEach(s => {
+              if (![...s.options].some(o => o.value.toLowerCase() === cat.name.toLowerCase())) {
+                const o = document.createElement('option'); o.value = cat.name; o.textContent = cat.name; s.appendChild(o);
+              }
+            });
+
+            // Update category options template for future edits
+            const tpl = document.getElementById('cat-options-template');
+            tpl.innerHTML += `<option value="${cat.name}">${cat.name}</option>`;
+
+            // Add to Manage table if not present
+            const tbody = document.getElementById('cat-tbody');
+            if (tbody && !tbody.querySelector(`[data-cat-row="${cat.id}"]`)) {
+              const tr = document.createElement('tr');
+              tr.setAttribute('data-cat-row', cat.id);
+              tr.innerHTML = `<td class="col-name">${cat.name}</td>
+                <td class="right col-actions">
+                  <form method="post" action="/categories/${cat.id}/delete" data-confirm="Delete category '${cat.name}'? This won't change existing transactions.">
+                    <button class="danger btn" type="submit">Delete</button>
+                  </form>
+                </td>`;
+              tbody.appendChild(tr);
+            }
+            sel.value = cat.name; // select newly added
+            input.value = '';
+          } catch (e) {
+            alert('Could not add category.');
+            console.error(e);
+          }
+        });
+      }
+
+      // ----- Edit Transaction (inline for latest 100) -----
+      function buildCategorySelectHTML(selectedValue) {
+        const tpl = document.getElementById('cat-options-template');
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = `<select name="category" data-edit-cat required>${tpl.innerHTML}</select>`;
+        const select = wrapper.firstElementChild;
+        if (selectedValue) {
+          [...select.options].forEach(o => { if (o.value === selectedValue) o.selected = true; });
+        }
+        return wrapper.innerHTML; // return full <select> markup
+      }
+
+      function enterEdit(tr) {
+        if (tr.dataset.editing === '1') return;
+        tr.dataset.editing = '1';
+
+        const data = JSON.parse(tr.getAttribute('data-json') || '{}');
+        tr.dataset.orig = tr.innerHTML;
+
+        const dateHTML = `<input type="date" name="date" value="${data.date || ''}" required />`;
+        const catHTML  = buildCategorySelectHTML(data.category || '');
+        const nameHTML = `<input type="text" name="name" value="${(data.name || '').replace(/"/g,'&quot;')}" required />`;
+        const amtHTML  = `<input type="number" name="amount_kd" step="0.001" min="0" value="${data.amount || '0.000'}" required />`;
+
+        tr.innerHTML = `
+          <td class="col-date">${dateHTML}</td>
+          <td class="col-cat">${catHTML}</td>
+          <td class="col-name">${nameHTML}</td>
+          <td class="right col-amt">${amtHTML}</td>
+          <td class="right col-actions">
+            <button type="button" class="btn" data-save>Save</button>
+            <button type="button" class="btn danger" data-cancel-edit>Cancel</button>
+          </td>
+        `;
+      }
+
+      function exitEdit(tr) {
+        if (!tr.dataset.editing) return;
+        tr.innerHTML = tr.dataset.orig || tr.innerHTML;
+        tr.dataset.editing = '';
+      }
+
+      document.addEventListener('click', async (e) => {
+        const editBtn = e.target.closest('[data-edit]');
+        if (editBtn) {
+          const tr = editBtn.closest('tr[data-txn-row]');
+          if (tr) enterEdit(tr);
+          return;
+        }
+        const cancelBtn = e.target.closest('[data-cancel-edit]');
+        if (cancelBtn) {
+          const tr = cancelBtn.closest('tr[data-txn-row]');
+          if (tr) exitEdit(tr);
+          return;
+        }
+        const saveBtn = e.target.closest('[data-save]');
+        if (saveBtn) {
+          const tr = saveBtn.closest('tr[data-txn-row]');
+          if (!tr) return;
+          const id = tr.getAttribute('data-txn-row');
+          const date = tr.querySelector('input[name="date"]').value;
+          const category = tr.querySelector('select[name="category"]').value;
+          const name = tr.querySelector('input[name="name"]').value;
+          const amount = tr.querySelector('input[name="amount_kd"]').value;
+
+          // Simple validation
+          if (!category || !name) { alert('Category and name are required.'); return; }
+
+          const params = new URLSearchParams();
+          params.set('date', date);
+          params.set('category', category);
+          params.set('name', name);
+          params.set('amount_kd', amount);
+
+          try {
+            saveBtn.disabled = true;
+            const res = await fetch(`/transactions/${id}/edit`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: params.toString()
+            });
+            if (!res.ok) throw new Error('Save failed');
+            // Reload to reflect server-side flash + totals in charts
+            location.reload();
+          } catch (err) {
+            console.error(err);
+            alert('Could not save changes.');
+            saveBtn.disabled = false;
+          }
+        }
+      });
+
+      // Default date (Add form) to today if blank
+      (function() {
+        const el = document.getElementById('date');
+        if (el && !el.value) {
+          const now = new Date();
+          const mm = String(now.getMonth() + 1).padStart(2, '0');
+          const dd = String(now.getDate()).padStart(2, '0');
+          el.value = `${now.getFullYear()}-${mm}-${dd}`;
+        }
+      })();
+    </script>
+  </body>
+</html>
