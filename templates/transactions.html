@@ -13,7 +13,7 @@
       a:hover { text-decoration: underline; }
       main { max-width: min(var(--max), 100vw); margin: 0 auto; padding: 24px 16px 48px; }
 
-      /* Two-column layout that can actually shrink without pushing off-screen */
+      /* Two-column layout */
       .grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
       @media (min-width: 1100px) { .grid { grid-template-columns: minmax(0,1fr) minmax(0,1fr); } }
 
@@ -22,18 +22,22 @@
 
       /* Form */
       .form { display: grid; grid-template-columns: 1fr; gap: 12px; }
-      .row { display: grid; grid-template-columns: 1fr; gap: 12px; }
-      @media (min-width: 900px) { .row { grid-template-columns: 170px 1fr 1fr 150px; } }
+      .row-3 { display: grid; grid-template-columns: 1fr; gap: 12px; }
+      @media (min-width: 900px) { .row-3 { grid-template-columns: 170px 1fr 150px; } }
       label { display: flex; flex-direction: column; font-size: 13px; color:#9fb0d9; gap: 6px; min-width: 0; }
-      input[type="text"], input[type="number"], input[type="date"], select {
+      input[type="text"], input[type="number"], input[type="date"], select, textarea {
         background:#0b1327; color:#e8eefc; border:1px solid #2a3c67; border-radius: 10px; padding: 10px 12px; font-size: 14px; width: 100%; box-sizing: border-box;
       }
+      textarea { resize: vertical; min-height: 64px; }
       .actions { display: flex; gap: 10px; align-items:center; flex-wrap: wrap; }
       button { background:#2b63ff; color:white; border:0; padding: 10px 14px; border-radius: 10px; font-weight: 600; cursor: pointer; }
+      button:hover { filter: brightness(1.05); }
       .btn { background:#2b63ff; color:white; border:0; padding: 8px 12px; border-radius: 10px; font-weight: 600; cursor: pointer; }
-      .btn:hover, button:hover { filter: brightness(1.05); }
-      .danger { background:#7a2c2c; }
+      .btn:hover { filter: brightness(1.05); }
       .muted { color:#9fb0d9; font-size: 14px; margin:6px 0 0; }
+      .danger { background:#7a2c2c; }
+      .ghost { background: transparent; border:1px solid #2a3c67; }
+
       .flash { padding: 10px 12px; border-radius: 10px; margin: 10px 0 0; }
       .flash.success { background:#0f2a18; border:1px solid #1f6c3d; color:#b8f3cf; }
       .flash.danger  { background:#2a1111; border:1px solid #6c1f1f; color:#f3b8b8; }
@@ -47,10 +51,8 @@
       .right { text-align: right; }
       .empty { padding: 12px 14px; border-radius: 10px; background: #0b1327; border:1px dashed #2a3c67; color:#9fb0d9; }
       nav { margin-top: 8px; }
-
-      /* Column wrapping rules: keep short columns tight; let description wrap */
       .col-date, .col-cat, .col-amt, .col-actions { white-space: nowrap; }
-      .col-actions { width: 1%; } /* shrink-to-fit */
+      .col-actions { width: 1%; }
       .col-name { white-space: normal; word-break: break-word; overflow-wrap: anywhere; }
 
       /* Manage categories */
@@ -61,7 +63,30 @@
       .upload-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
       input[type="file"]{ background:#0b1327; color:#e8eefc; border:1px solid #2a3c67; border-radius:10px; padding:8px; }
       .hint { font-size:12px; color:#9fb0d9; margin-top:6px; }
+
+      /* Modal */
+      .modal-backdrop {
+        position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+        display: none; align-items: center; justify-content: center; z-index: 1000;
+      }
+      .modal-backdrop.open { display: flex; }
+      .modal {
+        width: min(1100px, 96vw); max-height: 86vh; overflow: hidden; border-radius: 14px;
+        background: #0e1a33; border: 1px solid #1f2a44; box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+        display: flex; flex-direction: column;
+      }
+      .modal header { background: transparent; border: 0; padding: 16px; display:flex; align-items:center; justify-content: space-between; }
+      .modal h3 { margin: 0; font-size: 18px; color:#c6d4ff; }
+      .modal .body { padding: 0 16px 16px; display:flex; flex-direction: column; gap:10px; }
+      .modal .table-wrap { max-height: 56vh; border-radius: 10px; border:1px solid #1f2a44; }
+      .modal footer { padding: 14px 16px; border-top: 1px solid #1f2a44; display:flex; gap:10px; align-items:center; justify-content: space-between; flex-wrap: wrap; }
+      .pill { padding: 6px 10px; border-radius: 999px; background:#0b1327; border:1px solid #2a3c67; font-size:12px; color:#9fb0d9; }
+
+      .invalid { border-color: #b44; background: #2a1111; }
+      .err { color:#f3b8b8; font-size: 12px; }
+      .success { color:#b8f3cf; }
     </style>
+    <!-- Optional datalist for categories -->
   </head>
   <body>
     <header>
@@ -78,18 +103,19 @@
         {% endif %}
       {% endwith %}
 
-      <!-- Category options template to reuse in edit forms -->
-      <template id="cat-options-template">
+      <!-- Category suggestions -->
+      <datalist id="category-list">
         {% for c in categories %}
-          <option value="{{ c.name }}">{{ c.name }}</option>
+          <option value="{{ c.name }}"></option>
         {% endfor %}
-      </template>
+      </datalist>
 
       <div class="grid">
         <section class="card">
           <h2>Add Transaction</h2>
           <form class="form" method="post" action="{{ url_for('transactions') }}" novalidate>
-            <div class="row">
+            <!-- First row: Date, Category, Amount -->
+            <div class="row-3">
               <label>
                 Date
                 <input type="date" name="date" id="date" value="{{ request.form.get('date','') }}" />
@@ -104,16 +130,20 @@
                     <option value="{{ c.name }}">{{ c.name }}</option>
                   {% endfor %}
                 </select>
-              </label>
-              <label>
-                Description
-                <input type="text" name="name" placeholder="What was this?" value="{{ request.form.get('name','') }}" required />
+                <span class="hint">Manage or add categories below.</span>
               </label>
               <label>
                 Amount (KD)
                 <input type="number" name="amount_kd" step="0.001" min="0" placeholder="0.000" value="{{ request.form.get('amount_kd','') }}" required />
               </label>
             </div>
+
+            <!-- Second row: Description full width -->
+            <label>
+              Description
+              <textarea name="name" placeholder="What was this? (e.g., Groceries at City Center, taxi to airport)" required>{{ request.form.get('name','') }}</textarea>
+            </label>
+
             <div class="actions">
               <button type="submit">Add</button>
               <a class="muted" href="/transactions">Reset</a>
@@ -123,7 +153,7 @@
           <details class="card" style="margin-top:14px;">
             <summary><strong>Manage Categories</strong></summary>
 
-            <!-- Add new category moved here -->
+            <!-- Add new category (inside Manage Categories) -->
             <div class="cat-inline">
               <input type="text" id="new-cat" placeholder="New category" />
               <button type="button" id="btn-add-cat" class="btn">Add</button>
@@ -154,10 +184,11 @@
 
           <section class="card" style="margin-top:14px;">
             <h2>Import from CSV/Excel</h2>
-            <form method="post" action="/transactions/upload" enctype="multipart/form-data">
+            <form id="uploadForm" method="post" action="/transactions/upload" enctype="multipart/form-data">
               <div class="upload-row">
-                <input type="file" name="file" accept=".csv,.xlsx,.xls" required />
-                <button type="submit" class="btn">Upload</button>
+                <input type="file" name="file" id="fileInput" accept=".csv,.xlsx,.xls" required />
+                <button type="submit" class="btn">Preview &amp; Import</button>
+                <span id="uploadErr" class="err" style="display:none;"></span>
               </div>
               <p class="hint">Required columns (header row): <strong>Date</strong>, <strong>Category</strong>, <strong>Transaction Description</strong>, <strong>Amount (KWD)</strong>.</p>
             </form>
@@ -173,29 +204,19 @@
                   <tr>
                     <th>Date</th>
                     <th>Category</th>
-                    <th>Name</th>
+                    <th>Description</th>
                     <th class="right">Amount (KD)</th>
                     <th class="right">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {% for t in items %}
-                    <tr
-                      data-txn-row="{{ t.id }}"
-                      data-json='{{ {
-                        "id": t.id,
-                        "date": (t.date.strftime("%Y-%m-%d") if t.date else ""),
-                        "category": t.category,
-                        "name": t.name,
-                        "amount": ("%.3f"|format(t.amount_kd))
-                      } | tojson }}'
-                    >
+                    <tr>
                       <td class="col-date">{{ t.date.strftime('%Y-%m-%d') if t.date else '' }}</td>
                       <td class="col-cat">{{ t.category }}</td>
                       <td class="col-name">{{ t.name }}</td>
                       <td class="right col-amt">{{ '%.3f'|format(t.amount_kd) }}</td>
                       <td class="right col-actions">
-                        <button type="button" class="btn" data-edit>Edit</button>
                         <form method="post" action="/transactions/{{ t.id }}/delete" data-confirm="Delete this transaction?">
                           <button class="danger btn" type="submit">Delete</button>
                         </form>
@@ -213,6 +234,43 @@
       </div>
     </main>
 
+    <!-- Preview Modal -->
+    <div class="modal-backdrop" id="previewBackdrop" aria-hidden="true">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="previewTitle">
+        <header>
+          <h3 id="previewTitle">Preview Import</h3>
+          <button id="btnCloseModal" class="btn ghost">Close</button>
+        </header>
+        <div class="body">
+          <div id="previewMeta" class="pill">—</div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th><input type="checkbox" id="checkAll" /></th>
+                  <th>Date</th>
+                  <th>Category</th>
+                  <th>Description</th>
+                  <th class="right">Amount (KD)</th>
+                </tr>
+              </thead>
+              <tbody id="previewTbody">
+                <!-- rows injected -->
+              </tbody>
+            </table>
+          </div>
+          <div id="previewErr" class="err" style="display:none;"></div>
+        </div>
+        <footer>
+          <div class="muted" id="previewHint">Review and edit any cell before importing.</div>
+          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <span class="pill" id="selCount">0 selected</span>
+            <button id="btnImport" class="btn" disabled>Approve &amp; Import</button>
+          </div>
+        </footer>
+      </div>
+    </div>
+
     <script>
       // Default date to today if blank
       (function() {
@@ -225,7 +283,7 @@
         }
       })();
 
-      // Confirm-before-submit helper for any form with data-confirm
+      // Confirm-before-submit helper for delete forms
       document.addEventListener('submit', function(e){
         const f = e.target.closest('form[data-confirm]');
         if (f) {
@@ -234,7 +292,7 @@
         }
       });
 
-      // ----- Add Category (now inside Manage Categories) -----
+      // Add Category (inside Manage Categories)
       const btnAddCat = document.getElementById('btn-add-cat');
       if (btnAddCat) {
         btnAddCat.addEventListener('click', async () => {
@@ -250,21 +308,11 @@
             if (!res.ok && res.status !== 200) throw new Error('Failed to add');
             const cat = await res.json();
 
-            // Update main Add form select
+            // Update Add form select
             const sel = document.getElementById('category');
             let opt = Array.from(sel.options).find(o => o.value.toLowerCase() === cat.name.toLowerCase());
             if (!opt) { opt = document.createElement('option'); opt.value = cat.name; opt.textContent = cat.name; sel.appendChild(opt); }
-
-            // Update edit selects that are currently visible
-            document.querySelectorAll('select[data-edit-cat]').forEach(s => {
-              if (![...s.options].some(o => o.value.toLowerCase() === cat.name.toLowerCase())) {
-                const o = document.createElement('option'); o.value = cat.name; o.textContent = cat.name; s.appendChild(o);
-              }
-            });
-
-            // Update category options template for future edits
-            const tpl = document.getElementById('cat-options-template');
-            tpl.innerHTML += `<option value="${cat.name}">${cat.name}</option>`;
+            sel.value = cat.name;
 
             // Add to Manage table if not present
             const tbody = document.getElementById('cat-tbody');
@@ -279,7 +327,6 @@
                 </td>`;
               tbody.appendChild(tr);
             }
-            sel.value = cat.name; // select newly added
             input.value = '';
           } catch (e) {
             alert('Could not add category.');
@@ -288,108 +335,150 @@
         });
       }
 
-      // ----- Edit Transaction (inline for latest 100) -----
-      function buildCategorySelectHTML(selectedValue) {
-        const tpl = document.getElementById('cat-options-template');
-        const wrapper = document.createElement('div');
-        wrapper.innerHTML = `<select name="category" data-edit-cat required>${tpl.innerHTML}</select>`;
-        const select = wrapper.firstElementChild;
-        if (selectedValue) {
-          [...select.options].forEach(o => { if (o.value === selectedValue) o.selected = true; });
-        }
-        return wrapper.innerHTML; // return full <select> markup
+      // ----------------- Preview Import Modal Logic -----------------
+      const uploadForm = document.getElementById('uploadForm');
+      const fileInput = document.getElementById('fileInput');
+      const uploadErr = document.getElementById('uploadErr');
+
+      const backdrop = document.getElementById('previewBackdrop');
+      const btnCloseModal = document.getElementById('btnCloseModal');
+      const previewMeta = document.getElementById('previewMeta');
+      const previewTbody = document.getElementById('previewTbody');
+      const previewErr = document.getElementById('previewErr');
+      const btnImport = document.getElementById('btnImport');
+      const checkAll = document.getElementById('checkAll');
+      const selCount = document.getElementById('selCount');
+
+      let previewRows = []; // source rows from server
+      function openModal(){ backdrop.classList.add('open'); backdrop.setAttribute('aria-hidden','false'); }
+      function closeModal(){ backdrop.classList.remove('open'); backdrop.setAttribute('aria-hidden','true'); }
+
+      function fmt(n){ return (Number(n)||0).toFixed(3); }
+
+      function validateRow(tr){
+        let ok = true;
+        function mark(el, cond){ if(!el) return true; el.classList.toggle('invalid', !cond); return cond; }
+        const d = tr.querySelector('input[name="date"]');
+        const c = tr.querySelector('input[name="category"]');
+        const n = tr.querySelector('input[name="name"]');
+        const a = tr.querySelector('input[name="amount_kd"]');
+        ok = mark(d, !!d.value) && ok;
+        ok = mark(c, !!c.value.trim()) && ok;
+        ok = mark(n, !!n.value.trim()) && ok;
+        const val = parseFloat(a.value);
+        ok = mark(a, !isNaN(val) && val >= 0) && ok;
+        return ok;
       }
 
-      function enterEdit(tr) {
-        if (tr.dataset.editing === '1') return;
-        tr.dataset.editing = '1';
+      function updateSelectionCount(){
+        const rows = [...previewTbody.querySelectorAll('tr')];
+        const selected = rows.filter(r => r.querySelector('input.row-include')?.checked);
+        selCount.textContent = `${selected.length} selected`;
+        // Enable Approve only if all selected rows validate
+        const allValid = selected.every(validateRow);
+        btnImport.disabled = !(selected.length > 0 && allValid);
+      }
 
-        const data = JSON.parse(tr.getAttribute('data-json') || '{}');
-        tr.dataset.orig = tr.innerHTML;
-
-        const dateHTML = `<input type="date" name="date" value="${data.date || ''}" required />`;
-        const catHTML  = buildCategorySelectHTML(data.category || '');
-        const nameHTML = `<input type="text" name="name" value="${(data.name || '').replace(/"/g,'&quot;')}" required />`;
-        const amtHTML  = `<input type="number" name="amount_kd" step="0.001" min="0" value="${data.amount || '0.000'}" required />`;
-
+      function buildRow(r, idx){
+        const tr = document.createElement('tr');
         tr.innerHTML = `
-          <td class="col-date">${dateHTML}</td>
-          <td class="col-cat">${catHTML}</td>
-          <td class="col-name">${nameHTML}</td>
-          <td class="right col-amt">${amtHTML}</td>
-          <td class="right col-actions">
-            <button type="button" class="btn" data-save>Save</button>
-            <button type="button" class="btn danger" data-cancel-edit>Cancel</button>
-          </td>
+          <td><input type="checkbox" class="row-include" checked /></td>
+          <td><input type="date" name="date" value="${r.date || ''}" /></td>
+          <td><input type="text" name="category" list="category-list" value="${(r.category||'').replace(/"/g,'&quot;')}" /></td>
+          <td><input type="text" name="name" value="${(r.name||'').replace(/"/g,'&quot;')}" /></td>
+          <td class="right"><input type="number" step="0.001" min="0" name="amount_kd" value="${fmt(r.amount_kd)}" style="text-align:right; width: 140px;" /></td>
         `;
+        // Validate on input/change
+        tr.addEventListener('input', () => updateSelectionCount());
+        tr.addEventListener('change', () => updateSelectionCount());
+        return tr;
       }
 
-      function exitEdit(tr) {
-        if (!tr.dataset.editing) return;
-        tr.innerHTML = tr.dataset.orig || tr.innerHTML;
-        tr.dataset.editing = '';
+      function renderPreviewTable(rows, meta){
+        previewTbody.innerHTML = '';
+        for (let i=0; i<rows.length; i++){
+          previewTbody.appendChild(buildRow(rows[i], i));
+        }
+        previewMeta.textContent = `Previewing ${rows.length} row(s)` + (meta.skipped ? ` • ${meta.skipped} skipped during parsing` : '') + (meta.capped ? ` • showing first 2000` : '');
+        checkAll.checked = true;
+        previewErr.style.display = 'none';
+        updateSelectionCount();
       }
 
-      document.addEventListener('click', async (e) => {
-        const editBtn = e.target.closest('[data-edit]');
-        if (editBtn) {
-          const tr = editBtn.closest('tr[data-txn-row]');
-          if (tr) enterEdit(tr);
-          return;
-        }
-        const cancelBtn = e.target.closest('[data-cancel-edit]');
-        if (cancelBtn) {
-          const tr = cancelBtn.closest('tr[data-txn-row]');
-          if (tr) exitEdit(tr);
-          return;
-        }
-        const saveBtn = e.target.closest('[data-save]');
-        if (saveBtn) {
-          const tr = saveBtn.closest('tr[data-txn-row]');
-          if (!tr) return;
-          const id = tr.getAttribute('data-txn-row');
-          const date = tr.querySelector('input[name="date"]').value;
-          const category = tr.querySelector('select[name="category"]').value;
-          const name = tr.querySelector('input[name="name"]').value;
-          const amount = tr.querySelector('input[name="amount_kd"]').value;
+      // Toggle select all
+      checkAll.addEventListener('change', () => {
+        const all = checkAll.checked;
+        previewTbody.querySelectorAll('input.row-include').forEach(cb => { cb.checked = all; });
+        updateSelectionCount();
+      });
 
-          // Simple validation
-          if (!category || !name) { alert('Category and name are required.'); return; }
+      btnCloseModal.addEventListener('click', () => { closeModal(); });
 
-          const params = new URLSearchParams();
-          params.set('date', date);
-          params.set('category', category);
-          params.set('name', name);
-          params.set('amount_kd', amount);
+      uploadForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        uploadErr.style.display = 'none'; uploadErr.textContent = '';
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) { uploadErr.textContent = 'Please choose a file.'; uploadErr.style.display = 'inline'; return; }
 
-          try {
-            saveBtn.disabled = true;
-            const res = await fetch(`/transactions/${id}/edit`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-              body: params.toString()
-            });
-            if (!res.ok) throw new Error('Save failed');
-            // Reload to reflect server-side flash + totals in charts
-            location.reload();
-          } catch (err) {
-            console.error(err);
-            alert('Could not save changes.');
-            saveBtn.disabled = false;
-          }
+        const fd = new FormData();
+        fd.append('file', file);
+        try {
+          const res = await fetch('/transactions/upload-preview', { method: 'POST', body: fd });
+          const data = await res.json();
+          if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+          previewRows = data.preview_rows || [];
+          renderPreviewTable(previewRows, { skipped: data.skipped || 0, capped: !!data.capped });
+          openModal();
+        } catch (err) {
+          console.error(err);
+          uploadErr.textContent = String(err.message || err);
+          uploadErr.style.display = 'inline';
         }
       });
 
-      // Default date (Add form) to today if blank
-      (function() {
-        const el = document.getElementById('date');
-        if (el && !el.value) {
-          const now = new Date();
-          const mm = String(now.getMonth() + 1).padStart(2, '0');
-          const dd = String(now.getDate()).padStart(2, '0');
-          el.value = `${now.getFullYear()}-${mm}-${dd}`;
+      btnImport.addEventListener('click', async () => {
+        // Gather selected & validated rows
+        const rows = [];
+        const trs = [...previewTbody.querySelectorAll('tr')];
+        for (const tr of trs) {
+          const include = tr.querySelector('input.row-include').checked;
+          if (!include) continue;
+          if (!validateRow(tr)) { previewErr.textContent = 'Please fix highlighted rows before importing.'; previewErr.style.display = 'block'; return; }
+          rows.push({
+            date: tr.querySelector('input[name="date"]').value,
+            category: tr.querySelector('input[name="category"]').value.trim(),
+            name: tr.querySelector('input[name="name"]').value.trim(),
+            amount_kd: tr.querySelector('input[name="amount_kd"]').value
+          });
         }
-      })();
+        if (rows.length === 0) { previewErr.textContent = 'No rows selected.'; previewErr.style.display = 'block'; return; }
+
+        btnImport.disabled = true; btnImport.textContent = 'Importing...';
+        try {
+          const res = await fetch('/transactions/import-commit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify({ rows })
+          });
+          const data = await res.json();
+          if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+          // Success — reload to show new rows
+          closeModal();
+          window.location.reload();
+        } catch (err) {
+          console.error(err);
+          previewErr.textContent = 'Import failed: ' + String(err.message || err);
+          previewErr.style.display = 'block';
+        } finally {
+          btnImport.disabled = false; btnImport.textContent = 'Approve & Import';
+        }
+      });
+
+      // Close modal on backdrop click (but not when clicking content)
+      backdrop.addEventListener('click', (e) => {
+        if (e.target === backdrop) closeModal();
+      });
     </script>
   </body>
 </html>

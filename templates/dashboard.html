@@ -7,10 +7,21 @@
     <style>
       :root { --max: 1200px; }
       body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; margin: 0; background:#0b1220; color:#e8eefc; overflow-x:hidden; }
-      header { padding: 22px 16px; background: #0e1a33; border-bottom: 1px solid #1f2a44; display:flex; align-items:center; gap:18px; }
+      header { padding: 22px 16px; background: #0e1a33; border-bottom: 1px solid #1f2a44; display:flex; align-items:center; gap:18px; justify-content: space-between; flex-wrap: wrap; }
       header h1 { font-size: 20px; margin: 0; letter-spacing: 0.2px; }
       header nav a { color:#8ab4ff; text-decoration:none; font-size:14px; }
       header nav a:hover { text-decoration:underline; }
+
+      .controls { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+      .controls label { font-size: 12px; color:#9fb0d9; }
+      .controls select {
+        background:#0b1327; color:#e8eefc; border:1px solid #2a3c67; border-radius:10px; padding:8px 10px; font-size:14px;
+      }
+      .controls button {
+        background:#2b63ff; color:white; border:0; padding:8px 10px; border-radius:10px; font-weight:600; cursor:pointer;
+      }
+      .controls button:hover { filter:brightness(1.05); }
+
       main { max-width: min(var(--max), 100vw); margin: 0 auto; padding: 24px 16px 48px; }
 
       /* KPI cards */
@@ -21,14 +32,30 @@
       .kpi .value { font-size:28px; font-weight:700; letter-spacing:0.2px; }
       .kpi .sub { font-size:12px; color:#9fb0d9; margin-top:4px; }
 
-      /* Charts */
+      /* Cards / grid */
       .grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
       @media (min-width: 900px) { .grid { grid-template-columns: 1fr 1fr; } }
-      .card { background: #111a2e; border: 1px solid #1f2a44; border-radius: 14px; padding: 16px; box-shadow: 0 6px 20px rgba(0,0,0,0.25); }
+      .card { background: #111a2e; border: 1px solid #1f2a44; border-radius: 14px; padding: 16px; box-shadow: 0 6px 20px rgba(0,0,0,0.25); min-width:0; }
       .card h2 { font-size: 16px; margin: 0 0 10px; font-weight: 600; color:#c6d4ff; }
       canvas { width: 100%; height: 340px; }
       .empty { padding: 12px 14px; border-radius: 10px; background: #0b1327; border:1px dashed #2a3c67; color:#9fb0d9; }
+      .table-wrap { overflow: hidden auto; max-height: 360px; }
+      table { width: 100%; border-collapse: collapse; }
+      thead th { text-align: left; font-weight: 700; font-size: 13px; color:#9fb0d9; padding: 10px 8px; border-bottom: 1px solid #1f2a44; }
+      tbody td { padding: 10px 8px; border-bottom: 1px dashed #1f2a44; font-size: 14px; }
+      .right { text-align:right; }
 
+      /* Compact line chart card */
+      .compact canvas { height: 240px; }
+
+      /* MoM deltas */
+      .delta-pos { color:#b8f3cf; }   /* green-ish */
+      .delta-neg { color:#f3b8b8; }   /* red-ish */
+      .muted { color:#9fb0d9; }
+
+      /* Sparklines */
+      .sparkcell { width: 140px; }
+      .spark { width: 120px; height: 30px; display:block; margin-left:auto; }
       .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); border:0; }
     </style>
     <!-- Chart.js CDN -->
@@ -36,24 +63,32 @@
   </head>
   <body>
     <header>
-      <h1>Expense Tracker</h1>
-      <nav><a href="/transactions">Add & View Transactions →</a></nav>
+      <div style="display:flex; align-items:center; gap:18px; flex-wrap:wrap;">
+        <h1>Expense Tracker</h1>
+        <nav><a href="/transactions">Add & View Transactions →</a></nav>
+      </div>
+      <div class="controls">
+        <label for="selMonth">Month</label>
+        <select id="selMonth"></select>
+        <button id="btnThisMonth" type="button">This month</button>
+      </div>
     </header>
+
     <main>
-      <!-- KPI row -->
-      <section class="kpis" aria-label="Key figures for current month">
+      <!-- KPI row (for selected month) -->
+      <section class="kpis" aria-label="Key figures for selected month">
         <div class="kpi">
-          <div class="label">Total Spent (MTD)</div>
+          <div class="label">Total Spent (Selected Month)</div>
           <div class="value" id="kpi-total">KD 0.000</div>
           <div class="sub" id="kpi-total-sub"></div>
         </div>
         <div class="kpi">
-          <div class="label">Avg / Day (MTD)</div>
+          <div class="label">Avg / Day (Selected Month)</div>
           <div class="value" id="kpi-avg">KD 0.000</div>
           <div class="sub" id="kpi-avg-sub"></div>
         </div>
         <div class="kpi">
-          <div class="label">Top Category (MTD)</div>
+          <div class="label">Top Category (Selected Month)</div>
           <div class="value" id="kpi-topcat">—</div>
           <div class="sub" id="kpi-topcat-sub"></div>
         </div>
@@ -61,21 +96,70 @@
 
       <div class="grid">
         <section class="card">
-          <h2>Spend by Category</h2>
-          <div id="cat-empty" class="empty" hidden>No data yet. Add transactions on the Transactions page.</div>
-          <canvas id="catChart" aria-label="Spend by category" role="img"></canvas>
+          <h2>Spend by Category — <span id="catTitleSpan">Selected Month</span></h2>
+          <div id="cat-empty" class="empty" hidden>No data for this month. Try a different month or add transactions.</div>
+          <canvas id="catChart" aria-label="Spend by category (selected month)" role="img"></canvas>
         </section>
+
         <section class="card">
-          <h2>Spend by Month</h2>
+          <h2>Spend by Month — Last 12 Months</h2>
           <div id="month-empty" class="empty" hidden>No data yet. Add transactions on the Transactions page.</div>
-          <canvas id="monthChart" aria-label="Spend by month" role="img"></canvas>
+          <canvas id="monthChart" aria-label="Spend by month (last 12)" role="img"></canvas>
         </section>
       </div>
+
+      <section id="allMonthsCard" class="card compact" style="margin-top:16px;" hidden>
+        <h2>All Months (Line)</h2>
+        <div class="empty" id="allMonthsEmpty" hidden>No data yet.</div>
+        <canvas id="allMonthsChart" aria-label="Spend by month (all time, line)" role="img"></canvas>
+      </section>
+
+      <section class="card" style="margin-top:16px;">
+        <h2>Top 5 Categories — <span id="top5TitleSpan">Selected Month</span></h2>
+        <div id="top5-empty" class="empty" hidden>No data for this month.</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Category</th><th class="right">Total (KD)</th><th class="right">Share</th></tr></thead>
+            <tbody id="top5Body"></tbody>
+          </table>
+        </div>
+        <p class="muted" id="top3Share" style="margin-top:8px;"></p>
+      </section>
+
+      <!-- Month-over-Month (overall + per-category) with sparklines -->
+      <section class="card" style="margin-top:16px;">
+        <h2>Month-over-Month — <span id="momTitleSpan">Selected vs Previous</span></h2>
+        <div id="mom-empty" class="empty" hidden>No data for the selected or previous month.</div>
+        <p id="momOverall" class="muted" style="margin-bottom:10px;"></p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Category</th>
+                <th class="right">This Month</th>
+                <th class="right">Prev Month</th>
+                <th class="right sparkcell">Trend (12m)</th>
+                <th class="right">Change</th>
+              </tr>
+            </thead>
+            <tbody id="momBody"></tbody>
+          </table>
+        </div>
+      </section>
     </main>
 
     <script>
+      // ---- Helpers ----
       function fmt(n){ return (Number(n)||0).toFixed(3); }
       function monthKey(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; }
+      function prevMonth(ym){
+        const [y,m] = ym.split('-').map(Number);
+        const d = new Date(y, (m-1) - 1, 1); // JS month 0-11
+        return monthKey(d);
+      }
+      function daysInMonth(year, month1to12){ return new Date(year, month1to12, 0).getDate(); } // month param: 1..12
+      function sortYMAsc(keys){ return keys.slice().sort(); } // "YYYY-MM" sorts lexicographically safely
+      function slug(s){ return (s||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,''); }
 
       async function fetchJSON(url){
         const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
@@ -83,69 +167,292 @@
         return res.json();
       }
 
-      function ensureChart(ctx, cfg){
-        if(!ctx) return null;
-        try { return new Chart(ctx, cfg); } catch(e){ console.error(e); return null; }
+      function groupByCategory(txns){
+        const byCat = {};
+        for(const t of txns){ byCat[t.category] = (byCat[t.category]||0) + (Number(t.amount_kd)||0); }
+        return byCat;
+      }
+      function monthBucketsFromTxns(txns){
+        const buckets = {};
+        for(const t of txns){
+          const ym = (t.date||'').slice(0,7);
+          if(!ym) continue;
+          buckets[ym] = (buckets[ym]||0) + (Number(t.amount_kd)||0);
+        }
+        const keys = sortYMAsc(Object.keys(buckets));
+        return { keys, totals: keys.map(k => buckets[k]) };
+      }
+      function buildCategorySeries(txns){
+        const map = {};
+        for(const t of txns){
+          const ym = (t.date||'').slice(0,7);
+          if(!ym) continue;
+          const cat = t.category;
+          if(!map[cat]) map[cat] = {};
+          map[cat][ym] = (map[cat][ym]||0) + (Number(t.amount_kd)||0);
+        }
+        return map; // {cat: {ym: total}}
+      }
+      function calcKPIsForMonth(txns, ym){
+        const [y,m] = ym.split('-').map(Number);
+        const total = txns.reduce((s,t)=> s + (Number(t.amount_kd)||0), 0);
+        const avg = (y && m) ? total / daysInMonth(y, m) : 0;
+        const byCat = groupByCategory(txns);
+        const top = Object.entries(byCat).sort((a,b)=> b[1]-a[1])[0] || ['—', 0];
+        return { total, avg, topCat: top[0], topVal: top[1] };
+      }
+      function filterMonth(txns, ym){ return txns.filter(t => (t.date||'').slice(0,7) === ym); }
+
+      // ---- State & elements ----
+      let allTxns = [];
+      let catChart, monthChart, allMonthsChart;
+      const sparkCharts = {}; // id -> Chart
+
+      const selMonth = document.getElementById('selMonth');
+      const btnThisMonth = document.getElementById('btnThisMonth');
+
+      const kpiTotal = document.getElementById('kpi-total');
+      const kpiTotalSub = document.getElementById('kpi-total-sub');
+      const kpiAvg = document.getElementById('kpi-avg');
+      const kpiAvgSub = document.getElementById('kpi-avg-sub');
+      const kpiTop = document.getElementById('kpi-topcat');
+      const kpiTopSub = document.getElementById('kpi-topcat-sub');
+
+      const catEmpty = document.getElementById('cat-empty');
+      const monthEmpty = document.getElementById('month-empty');
+      const top5Empty = document.getElementById('top5-empty');
+      const top5Body = document.getElementById('top5Body');
+      const top3Share = document.getElementById('top3Share');
+      const catTitleSpan = document.getElementById('catTitleSpan');
+      const top5TitleSpan = document.getElementById('top5TitleSpan');
+
+      const allMonthsCard = document.getElementById('allMonthsCard');
+      const allMonthsEmpty = document.getElementById('allMonthsEmpty');
+
+      const momTitleSpan = document.getElementById('momTitleSpan');
+      const momEmpty = document.getElementById('mom-empty');
+      const momOverall = document.getElementById('momOverall');
+      const momBody = document.getElementById('momBody');
+
+      let monthKeysAsc = [];
+      let catSeriesMap = {};
+
+      function destroyChart(chart){ if(chart && chart.destroy){ try { chart.destroy(); } catch(e){} } }
+
+      function updateKPIsFor(ym, monthTxns){
+        const { total, avg, topCat, topVal } = calcKPIsForMonth(monthTxns, ym);
+        kpiTotal.textContent = `KD ${fmt(total)}`;
+        kpiTotalSub.textContent = ym;
+        kpiAvg.textContent = `KD ${fmt(avg)}`;
+        kpiAvgSub.textContent = `Avg across ${ym}`;
+        kpiTop.textContent = topCat;
+        kpiTopSub.textContent = topCat === '—' ? '' : `KD ${fmt(topVal)} in ${ym}`;
+      }
+
+      function updateDonutFor(ym, monthTxns){
+        const byCat = groupByCategory(monthTxns);
+        const labels = Object.keys(byCat);
+        const values = Object.values(byCat);
+        catTitleSpan.textContent = ym;
+
+        const ctx = document.getElementById('catChart');
+        destroyChart(catChart);
+        if(values.length === 0){ catEmpty.hidden = false; return; }
+        catEmpty.hidden = true;
+        catChart = new Chart(ctx, {
+          type: 'doughnut',
+          data: { labels, datasets: [{ label: 'KD', data: values }] },
+          options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
+        });
+      }
+
+      function updateTop5For(ym, monthTxns){
+        const entries = Object.entries(groupByCategory(monthTxns)).sort((a,b)=> b[1]-a[1]);
+        top5TitleSpan.textContent = ym;
+        top5Body.innerHTML = '';
+        if(entries.length === 0){ top5Empty.hidden = false; top3Share.textContent = ''; return; }
+        top5Empty.hidden = true;
+
+        const total = entries.reduce((s, [,v])=> s+v, 0);
+        for(const [cat, val] of entries.slice(0,5)){
+          const tr = document.createElement('tr');
+          const pct = total > 0 ? (val/total*100) : 0;
+          tr.innerHTML = `<td>${cat}</td><td class="right">KD ${fmt(val)}</td><td class="right">${pct.toFixed(1)}%</td>`;
+          top5Body.appendChild(tr);
+        }
+        // Top-3 concentration
+        const top3 = entries.slice(0,3).reduce((s, [,v])=> s+v, 0);
+        const pct3 = total > 0 ? (top3/total*100) : 0;
+        top3Share.textContent = `Top 3 categories = ${pct3.toFixed(1)}% of selected month spend.`;
+      }
+
+      function updateBarLast12(keys, totals){
+        const n = keys.length;
+        const lastKeys = keys.slice(Math.max(0, n - 12));
+        const lastVals = totals.slice(Math.max(0, n - 12));
+        const ctx = document.getElementById('monthChart');
+        destroyChart(monthChart);
+        if(lastVals.length === 0){ monthEmpty.hidden = false; return; }
+        monthEmpty.hidden = true;
+        monthChart = new Chart(ctx, {
+          type: 'bar',
+          data: { labels: lastKeys, datasets: [{ label: 'KD', data: lastVals }] },
+          options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+        });
+      }
+
+      function updateAllMonthsLine(keys, totals){
+        const hasMany = keys.length > 12;
+        allMonthsCard.hidden = !hasMany;
+        if(!hasMany) { destroyChart(allMonthsChart); return; }
+
+        const ctx = document.getElementById('allMonthsChart');
+        destroyChart(allMonthsChart);
+        if(totals.length === 0){ allMonthsEmpty.hidden = true; return; }
+        allMonthsEmpty.hidden = true;
+        allMonthsChart = new Chart(ctx, {
+          type: 'line',
+          data: { labels: keys, datasets: [{ label: 'KD', data: totals, tension: 0.2 }] },
+          options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+        });
+      }
+
+      function populateMonthDropdown(keys){
+        selMonth.innerHTML = '';
+        const desc = keys.slice().reverse(); // newest first
+        for(const ym of desc){
+          const opt = document.createElement('option');
+          opt.value = ym; opt.textContent = ym;
+          selMonth.appendChild(opt);
+        }
+        // Default to current month if present; otherwise latest
+        const cur = monthKey(new Date());
+        selMonth.value = keys.includes(cur) ? cur : desc[0] || '';
+      }
+
+      // ---- Month-over-Month (overall + per-category) ----
+      function momPct(curr, prev){
+        if (prev === 0 && curr > 0) return Infinity;     // "new"
+        if (prev === 0 && curr === 0) return 0;
+        return ((curr - prev) / prev) * 100;
+      }
+
+      function sparkSeriesFor(cat, window=12){
+        const keys = monthKeysAsc;
+        const start = Math.max(0, keys.length - window);
+        const labels = keys.slice(start);
+        const vals = labels.map(k => (catSeriesMap[cat] && catSeriesMap[cat][k]) ? catSeriesMap[cat][k] : 0);
+        return { labels, vals };
+      }
+
+      function renderSparkline(canvasId, labels, values){
+        const el = document.getElementById(canvasId);
+        if(!el) return;
+        if (sparkCharts[canvasId]) { try { sparkCharts[canvasId].destroy(); } catch(e){} }
+        sparkCharts[canvasId] = new Chart(el, {
+          type: 'line',
+          data: { labels, datasets: [{ label:'KD', data: values, pointRadius: 0, tension: 0.3 }] },
+          options: {
+            responsive: false,  // use explicit canvas width/height
+            plugins: { legend: { display: false }, tooltip: { enabled: false } },
+            elements: { line: { borderWidth: 1.5 }, point: { radius: 0 } },
+            scales: { x: { display: false }, y: { display: false, beginAtZero: true } }
+          }
+        });
+      }
+
+      function updateMoMFor(ym, monthTxns, prevTxns){
+        const prevYM = prevMonth(ym);
+        momTitleSpan.textContent = `${ym} vs ${prevYM}`;
+        const totalNow = monthTxns.reduce((s,t)=> s + (Number(t.amount_kd)||0), 0);
+        const totalPrev = prevTxns.reduce((s,t)=> s + (Number(t.amount_kd)||0), 0);
+
+        // Overall line
+        const pct = momPct(totalNow, totalPrev);
+        let pctTxt, cls = '';
+        if (pct === Infinity) { pctTxt = 'new'; cls = 'delta-pos'; }
+        else {
+          const sign = pct > 0 ? '+' : '';
+          cls = pct > 0 ? 'delta-neg' : (pct < 0 ? 'delta-pos' : '');
+          pctTxt = `${sign}${pct.toFixed(1)}%`;
+        }
+        momOverall.innerHTML = `Overall: KD ${fmt(totalPrev)} → KD ${fmt(totalNow)} <span class="${cls}">(${pctTxt})</span>`;
+        momEmpty.hidden = !(totalNow === 0 && totalPrev === 0);
+
+        // Per-category rows
+        const nowMap = groupByCategory(monthTxns);
+        const prevMap = groupByCategory(prevTxns);
+        const cats = Array.from(new Set([...Object.keys(nowMap), ...Object.keys(prevMap)])).sort();
+        const rows = cats.map(cat => {
+          const curr = nowMap[cat] || 0;
+          const prev = prevMap[cat] || 0;
+          const p = momPct(curr, prev);
+          return { cat, curr, prev, p };
+        }).sort((a,b)=> b.curr - a.curr); // sort by this month’s spend
+
+        momBody.innerHTML = '';
+        if (rows.length === 0) { momEmpty.hidden = false; return; }
+        momEmpty.hidden = true;
+
+        // Build DOM rows with sparkline canvases
+        for (const r of rows) {
+          let ptxt = '', pcls = '';
+          if (r.p === Infinity) { ptxt = 'new'; pcls = 'delta-pos'; }
+          else {
+            const sign = r.p > 0 ? '+' : '';
+            ptxt = `${sign}${isFinite(r.p) ? r.p.toFixed(1) : '—'}%`;
+            pcls = r.p > 0 ? 'delta-neg' : (r.p < 0 ? 'delta-pos' : '');
+          }
+          const id = `spark-${slug(r.cat)}`;
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${r.cat}</td>
+            <td class="right">KD ${fmt(r.curr)}</td>
+            <td class="right">KD ${fmt(r.prev)}</td>
+            <td class="right sparkcell"><canvas id="${id}" class="spark" width="120" height="30"></canvas></td>
+            <td class="right"><span class="${pcls}">${ptxt}</span></td>`;
+          momBody.appendChild(tr);
+
+          // Render sparkline for this category (last 12 months)
+          const { labels, vals } = sparkSeriesFor(r.cat, 12);
+          renderSparkline(id, labels, vals);
+        }
+      }
+
+      async function refreshForSelected(){
+        const ym = selMonth.value;
+        const monthTxns = filterMonth(allTxns, ym);
+        updateKPIsFor(ym, monthTxns);
+        updateDonutFor(ym, monthTxns);
+        updateTop5For(ym, monthTxns);
+
+        // MoM vs previous month
+        const prevYM = prevMonth(ym);
+        const prevTxns = filterMonth(allTxns, prevYM);
+        updateMoMFor(ym, monthTxns, prevTxns);
       }
 
       (async () => {
-        const now = new Date();
-        const mk = monthKey(now);
-        const daysElapsed = now.getDate();
+        // Load transactions once; compute buckets (keeps month totals in sync)
+        allTxns = await fetchJSON('/api/transactions');
+        const { keys, totals } = monthBucketsFromTxns(allTxns);
+        monthKeysAsc = keys;
+        catSeriesMap = buildCategorySeries(allTxns);
 
-        // ---- KPIs computed client‑side from /api/transactions ----
-        try {
-          const all = await fetchJSON('/api/transactions');
-          const mtx = all.filter(t => (t.date||'').slice(0,7) === mk);
-          const total = mtx.reduce((s,t)=> s + (Number(t.amount_kd)||0), 0);
-          const avg = daysElapsed > 0 ? total / daysElapsed : 0;
-          const byCat = {};
-          for(const t of mtx){ byCat[t.category] = (byCat[t.category]||0) + (Number(t.amount_kd)||0); }
-          const [topCat, topVal] = Object.entries(byCat).sort((a,b)=> b[1]-a[1])[0] || ['—', 0];
+        populateMonthDropdown(keys);
+        await refreshForSelected();
 
-          document.getElementById('kpi-total').textContent = `KD ${fmt(total)}`;
-          document.getElementById('kpi-total-sub').textContent = mk;
-          document.getElementById('kpi-avg').textContent = `KD ${fmt(avg)}`;
-          document.getElementById('kpi-avg-sub').textContent = `${daysElapsed} day(s) so far`;
-          document.getElementById('kpi-topcat').textContent = topCat;
-          document.getElementById('kpi-topcat-sub').textContent = topCat === '—' ? '' : `KD ${fmt(topVal)} in ${mk}`;
-        } catch (e) {
-          console.error('KPI load failed', e);
-        }
+        // Charts
+        updateBarLast12(keys, totals);
+        updateAllMonthsLine(keys, totals);
 
-        // ---- Spend by Category (overall) ----
-        try {
-          const data = await fetchJSON('/api/spend-by-category');
-          const labels = Object.keys(data);
-          const values = Object.values(data);
-          const emptyEl = document.getElementById('cat-empty');
-          if(values.length === 0){ emptyEl.hidden = false; }
-          const ctx = document.getElementById('catChart');
-          ensureChart(ctx, {
-            type: 'doughnut',
-            data: { labels, datasets: [{ label: 'KD', data: values }] },
-            options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
-          });
-        } catch (e) { console.error(e); document.getElementById('cat-empty').hidden = false; }
-
-        // ---- Spend by Month (overall) ----
-        try {
-          const list = await fetchJSON('/api/spend-by-month');
-          const labels = list.map(r => r.month);
-          const values = list.map(r => r.total_kd);
-          const emptyEl = document.getElementById('month-empty');
-          if(values.length === 0){ emptyEl.hidden = false; }
-          const ctx = document.getElementById('monthChart');
-          ensureChart(ctx, {
-            type: 'bar',
-            data: { labels, datasets: [{ label: 'KD', data: values }] },
-            options: {
-              responsive: true,
-              plugins: { legend: { display: false } },
-              scales: { y: { beginAtZero: true } }
-            }
-          });
-        } catch (e) { console.error(e); document.getElementById('month-empty').hidden = false; }
+        // Events
+        selMonth.addEventListener('change', refreshForSelected);
+        btnThisMonth.addEventListener('click', () => {
+          const cur = monthKey(new Date());
+          if([...selMonth.options].some(o => o.value === cur)) selMonth.value = cur;
+          else selMonth.selectedIndex = 0; // fallback to latest
+          refreshForSelected();
+        });
       })();
     </script>
   </body>

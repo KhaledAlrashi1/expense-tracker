@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 import os
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash
 from flask_sqlalchemy import SQLAlchemy
@@ -26,11 +26,11 @@ def create_app() -> Flask:
     app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///expenses.db")
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "dev-secret-change-me")
-    app.config["MAX_CONTENT_LENGTH"] = 6 * 1024 * 1024  # 6 MB uploads
+    app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024  # 12 MB uploads
 
     db.init_app(app)
 
-    # Ensure tables exist (helps when adding new tables like 'categories')
+    # Ensure tables exist
     with app.app_context():
         db.create_all()
 
@@ -63,7 +63,6 @@ class Transaction(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     date = db.Column(db.Date, nullable=False, index=True)
-    # Stored as plain text for simplicity; picker uses Category.name list
     category = db.Column(db.String(64), nullable=False, index=True)
     name = db.Column(db.String(255), nullable=False)
     amount_kd = db.Column(db.Numeric(10, 3), nullable=False)
@@ -102,8 +101,92 @@ def _parse_date(s: str | None) -> date:
     return datetime.strptime(s.strip(), "%Y-%m-%d").date()
 
 
-def _parse_amount(s: str) -> Decimal:
-    return Decimal((s or "").replace(",", "").strip())
+def _parse_amount(s: str | None) -> Decimal:
+    return Decimal((s or "").replace(",", "").strip() or "0")
+
+
+# --- shared mapping for uploads ---
+REQUIRED_NAMES: Dict[str, List[str]] = {
+    "date": ["date"],
+    "category": ["category"],
+    "description": ["transaction description", "description", "name"],
+    "amount": ["amount (kwd)", "amount", "amount kd", "amount_kd"],
+}
+
+
+def _read_tabular_file_to_df(file) -> Tuple[pd.DataFrame, Dict[str, str]]:
+    """Read CSV/Excel into a DataFrame and return the detected column mapping."""
+    if pd is None:
+        raise RuntimeError("File import requires pandas. Install with: pip install pandas openpyxl")
+    ext = _ext(file.filename)
+    if ext not in ALLOWED_EXTS:
+        raise RuntimeError("Unsupported file type. Please upload .csv, .xlsx, or .xls.")
+
+    # Read
+    if ext == ".csv":
+        df = pd.read_csv(file)
+    else:
+        file.stream.seek(0)
+        df = pd.read_excel(file)  # requires openpyxl
+
+    # Build column map (incoming -> canonical)
+    colmap: Dict[str, str] = {}
+    for col in df.columns:
+        n = _norm(str(col))
+        for key, alts in REQUIRED_NAMES.items():
+            if n in alts and key not in colmap:
+                colmap[key] = col
+
+    missing = [k for k in REQUIRED_NAMES if k not in colmap]
+    if missing:
+        want = "Date, Category, Transaction Description, Amount (KWD)"
+        raise RuntimeError(
+            f"Missing required column(s): {', '.join(missing)}. Your header row should include: {want}."
+        )
+
+    # Normalize columns to: date, category, name, amount_kd
+    df = df.rename(
+        columns={
+            colmap["date"]: "date",
+            colmap["category"]: "category",
+            colmap["description"]: "name",
+            colmap["amount"]: "amount_kd",
+        }
+    )
+    return df, {
+        "date": colmap["date"],
+        "category": colmap["category"],
+        "name": colmap["description"],
+        "amount_kd": colmap["amount"],
+    }
+
+
+def _df_to_preview_rows(df: "pd.DataFrame") -> Tuple[List[Dict[str, Any]], int]:
+    """Coerce types; return list of rows ready for client preview (no DB writes)."""
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+    before = len(df)
+    df = df.dropna(subset=["date", "category", "name", "amount_kd"])  # type: ignore[arg-type]
+    skipped = before - len(df)
+
+    rows: List[Dict[str, Any]] = []
+    for _, r in df.iterrows():
+        try:
+            d: date = r["date"]  # type: ignore[assignment]
+            cat = str(r["category"]).strip()
+            nm = str(r["name"]).strip()
+            amt = _parse_amount(str(r["amount_kd"]))
+            rows.append(
+                {
+                    "date": d.isoformat(),
+                    "category": cat,
+                    "name": nm,
+                    "amount_kd": f"{amt:.3f}",
+                }
+            )
+        except Exception:
+            skipped += 1
+    return rows, skipped
 
 
 # -----------------------------------------------------------------------------
@@ -117,16 +200,15 @@ def register_routes(app: Flask) -> None:
 
     @app.route("/transactions", methods=["GET", "POST"])
     def transactions():
-        # Add a transaction
+        # Add a transaction (simple form)
         if request.method == "POST":
             try:
                 txn_date = _parse_date(request.form.get("date"))
                 category = (request.form.get("category") or "").strip()
                 name = (request.form.get("name") or "").strip()
-                amount = _parse_amount(request.form.get("amount_kd") or "")
-
+                amount = _parse_amount(request.form.get("amount_kd"))
                 if not category or not name:
-                    raise ValueError("Please provide category and name.")
+                    raise ValueError("Please provide category and description.")
             except ValueError as ve:
                 flash(str(ve), "danger")
             except Exception as e:  # noqa: BLE001
@@ -146,7 +228,6 @@ def register_routes(app: Flask) -> None:
             Transaction.query.order_by(Transaction.date.desc(), Transaction.id.desc()).limit(100).all()
         )
         categories: List[Category] = Category.query.order_by(Category.name.asc()).all()
-        # expects templates/transactions.html
         return render_template("transactions.html", items=items, categories=categories)
 
     # -------- Delete a transaction --------
@@ -158,35 +239,7 @@ def register_routes(app: Flask) -> None:
         flash("Transaction deleted.", "success")
         return redirect(url_for("transactions"))
 
-    # -------- Edit/update a transaction (for latest 100 in the UI) --------
-    # Use this in the table rows' edit form.
-    @app.route("/transactions/<int:txn_id>/edit", methods=["POST"])
-    def edit_transaction(txn_id: int):
-        txn = Transaction.query.get_or_404(txn_id)
-        try:
-            txn.date = _parse_date(request.form.get("date"))
-            txn.category = (request.form.get("category") or "").strip()
-            txn.name = (request.form.get("name") or "").strip()
-            txn.amount_kd = _parse_amount(request.form.get("amount_kd") or "")
-            if not txn.category or not txn.name:
-                raise ValueError("Category and name are required.")
-            db.session.commit()
-            flash("Transaction updated.", "success")
-        except ValueError as ve:
-            db.session.rollback()
-            flash(str(ve), "danger")
-        except Exception as e:  # noqa: BLE001
-            db.session.rollback()
-            flash(f"Update failed: {e}", "danger")
-        return redirect(url_for("transactions"))
-
-    # Small helper so the template can fetch a single row if needed (AJAX modal, etc.)
-    @app.route("/api/transactions/<int:txn_id>", methods=["GET"])
-    def api_transaction_one(txn_id: int):
-        txn = Transaction.query.get_or_404(txn_id)
-        return jsonify(txn.to_dict())
-
-    # ----------------- Upload (CSV / Excel) -----------------
+    # ----------------- Upload (legacy, immediate import) -----------------
     @app.route("/transactions/upload", methods=["POST"])
     def upload_transactions():
         file = request.files.get("file")
@@ -194,80 +247,95 @@ def register_routes(app: Flask) -> None:
             flash("Please choose a CSV or Excel file.", "danger")
             return redirect(url_for("transactions"))
 
-        ext = _ext(file.filename)
-        if ext not in ALLOWED_EXTS:
-            flash("Unsupported file type. Please upload .csv, .xlsx, or .xls.", "danger")
-            return redirect(url_for("transactions"))
-
-        if pd is None:
-            flash("File import requires pandas. Install with: pip install pandas openpyxl", "danger")
-            return redirect(url_for("transactions"))
-
-        # Read file
         try:
-            if ext == ".csv":
-                df = pd.read_csv(file)
-            else:
-                file.stream.seek(0)
-                df = pd.read_excel(file)  # requires openpyxl
+            df, _ = _read_tabular_file_to_df(file)
+            rows, skipped = _df_to_preview_rows(df)
         except Exception as e:  # noqa: BLE001
-            flash(f"Could not read file: {e}", "danger")
+            flash(str(e), "danger")
             return redirect(url_for("transactions"))
 
-        # Map incoming columns → our schema
-        # Your Excel headers: "Date, Category, Transaction Description, Amount (KWD)"
-        required_names = {
-            "date": ["date"],
-            "category": ["category"],
-            "description": ["transaction description", "description", "name"],
-            "amount": ["amount (kwd)", "amount", "amount kd", "amount_kd"],
-        }
-
-        colmap: Dict[str, str] = {}
-        for col in df.columns:
-            n = _norm(str(col))
-            for key, alts in required_names.items():
-                if n in alts and key not in colmap:
-                    colmap[key] = col
-
-        missing = [k for k in required_names if k not in colmap]
-        if missing:
-            want = "Date, Category, Transaction Description, Amount (KWD)"
-            flash(
-                f"Missing required column(s): {', '.join(missing)}. "
-                f"Your header row should include: {want}.",
-                "danger",
-            )
-            return redirect(url_for("transactions"))
-
-        # Normalize column names
-        df = df.rename(
-            columns={
-                colmap["date"]: "date",
-                colmap["category"]: "category",
-                colmap["description"]: "name",
-                colmap["amount"]: "amount_kd",
-            }
-        )
-
-        # Parse and clean
-        df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
-        before = len(df)
-        df = df.dropna(subset=["date", "category", "name", "amount_kd"])  # type: ignore[arg-type]
-
+        # Immediate commit (legacy behavior)
         imported = 0
-        skipped = before - len(df)
+        new_cats = set()
+        try:
+            txns: List[Transaction] = []
+            for r in rows:
+                txns.append(
+                    Transaction(
+                        date=_parse_date(r["date"]),
+                        category=r["category"],
+                        name=r["name"],
+                        amount_kd=_parse_amount(r["amount_kd"]),
+                    )
+                )
+                new_cats.add(r["category"])
+
+            if txns:
+                db.session.bulk_save_objects(txns)
+            if new_cats:
+                existing = {c.name.lower() for c in Category.query.all()}
+                for c in new_cats:
+                    if c.lower() not in existing:
+                        db.session.add(Category(name=c))
+            db.session.commit()
+            imported = len(txns)
+            flash(f"Imported {imported} transaction(s). Skipped {skipped}.", "success")
+        except Exception as e:  # noqa: BLE001
+            db.session.rollback()
+            flash(f"Import failed: {e}", "danger")
+
+        return redirect(url_for("transactions"))
+
+    # ----------------- New: Preview upload (no DB write) -----------------
+    @app.route("/transactions/upload-preview", methods=["POST"])
+    def upload_preview():
+        file = request.files.get("file")
+        if not file or not file.filename:
+            return jsonify({"ok": False, "error": "Please choose a CSV or Excel file."}), 400
+        try:
+            df, original_cols = _read_tabular_file_to_df(file)
+            rows, skipped = _df_to_preview_rows(df)
+            # Limit very large previews to protect browser; still tell full counts
+            preview_cap = 2000
+            preview_rows = rows[:preview_cap]
+            capped = len(rows) > preview_cap
+            return jsonify(
+                {
+                    "ok": True,
+                    "count": len(rows),
+                    "skipped": skipped,
+                    "capped": capped,
+                    "preview_rows": preview_rows,
+                    "original_columns": original_cols,  # what we matched
+                    "schema": ["date", "category", "name", "amount_kd"],
+                    "note": "Edit rows client-side, then POST to /transactions/import-commit.",
+                }
+            )
+        except Exception as e:  # noqa: BLE001
+            return jsonify({"ok": False, "error": str(e)}), 400
+
+    # ----------------- New: Commit edited preview -----------------
+    @app.route("/transactions/import-commit", methods=["POST"])
+    def import_commit():
+        payload = request.get_json(silent=True) or {}
+        rows = payload.get("rows") or []
+        if not isinstance(rows, list) or not rows:
+            return jsonify({"ok": False, "error": "No rows provided."}), 400
 
         txns: List[Transaction] = []
         new_cats = set()
+        imported = 0
+        skipped = 0
 
-        for _, r in df.iterrows():
+        for r in rows:
             try:
-                amt = _parse_amount(str(r["amount_kd"]))
-                cat = str(r["category"]).strip()
-                nm = str(r["name"]).strip()
-                dt: date = r["date"]  # type: ignore[assignment]
-                txns.append(Transaction(date=dt, category=cat, name=nm, amount_kd=amt))
+                d = _parse_date(r.get("date"))
+                cat = (r.get("category") or "").strip()
+                nm = (r.get("name") or "").strip()
+                amt = _parse_amount(r.get("amount_kd"))
+                if not cat or not nm:
+                    raise ValueError("Category and description are required.")
+                txns.append(Transaction(date=d, category=cat, name=nm, amount_kd=amt))
                 new_cats.add(cat)
                 imported += 1
             except Exception:
@@ -276,19 +344,16 @@ def register_routes(app: Flask) -> None:
         try:
             if txns:
                 db.session.bulk_save_objects(txns)
-            # Upsert categories so they appear in the picker
             if new_cats:
                 existing = {c.name.lower() for c in Category.query.all()}
                 for c in new_cats:
                     if c.lower() not in existing:
                         db.session.add(Category(name=c))
             db.session.commit()
-            flash(f"Imported {imported} transaction(s). Skipped {skipped}.", "success")
+            return jsonify({"ok": True, "imported": imported, "skipped": skipped})
         except Exception as e:  # noqa: BLE001
             db.session.rollback()
-            flash(f"Import failed: {e}", "danger")
-
-        return redirect(url_for("transactions"))
+            return jsonify({"ok": False, "error": f"Commit failed: {e}"}), 500
 
     # ----------------- Categories API + delete -----------------
     @app.route("/api/categories", methods=["GET", "POST"])
@@ -332,7 +397,6 @@ def register_routes(app: Flask) -> None:
 
     @app.route("/api/spend-by-month")
     def api_spend_by_month():
-        # SQLite-friendly month grouping
         ym = func.strftime("%Y-%m", Transaction.date)
         rows = db.session.query(ym.label("ym"), func.sum(Transaction.amount_kd)).group_by("ym").order_by("ym").all()
         return jsonify([{"month": ym_val, "total_kd": float(total)} for ym_val, total in rows])
