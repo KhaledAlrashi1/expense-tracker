@@ -286,20 +286,58 @@
         top3Share.textContent = `Top 3 categories = ${pct3.toFixed(1)}% of selected month spend.`;
       }
 
-      function updateBarLast12(keys, totals){
-        const n = keys.length;
-        const lastKeys = keys.slice(Math.max(0, n - 12));
-        const lastVals = totals.slice(Math.max(0, n - 12));
-        const ctx = document.getElementById('monthChart');
-        destroyChart(monthChart);
-        if(lastVals.length === 0){ monthEmpty.hidden = false; return; }
-        monthEmpty.hidden = true;
-        monthChart = new Chart(ctx, {
-          type: 'bar',
-          data: { labels: lastKeys, datasets: [{ label: 'KD', data: lastVals }] },
-          options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
-        });
-      }
+        function updateBarLast12(keys, totals){
+            const n = keys.length;
+            const lastKeys = keys.slice(Math.max(0, n - 12));
+            const lastVals = totals.slice(Math.max(0, n - 12));
+
+            const ctx = document.getElementById('monthChart');
+            destroyChart(monthChart);
+            if(lastVals.length === 0){ monthEmpty.hidden = false; return; }
+            monthEmpty.hidden = true;
+
+            // Compute MoM % for each displayed month against the previous month in the FULL series
+            const pct = lastKeys.map(k => {
+                const idxFull = keys.indexOf(k);
+                if (idxFull <= 0) return null;                  // no prior month in series
+                const prev = totals[idxFull - 1];
+                const curr = totals[idxFull];
+                if (!prev || prev === 0) return null;           // avoid /0 and "Infinity"
+                return ((curr - prev) / prev) * 100;
+            });
+
+            monthChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                labels: lastKeys,
+                datasets: [
+                    { type: 'bar',  label: 'KD',     data: lastVals, yAxisID: 'y'  },
+                    { type: 'line', label: 'MoM %',  data: pct,      yAxisID: 'y1', tension: 0.25, pointRadius: 3, spanGaps: true }
+                ]
+                },
+                options: {
+                responsive: true,
+                plugins: {
+                    legend: { display: true },
+                    tooltip: {
+                    callbacks: {
+                        label: (ctx) => {
+                        if (ctx.dataset.yAxisID === 'y1') {
+                            return `MoM: ${ctx.parsed.y.toFixed(1)}%`;
+                        }
+                        return `KD ${Number(ctx.parsed.y).toFixed(3)}`;
+                        }
+                    }
+                    }
+                },
+                scales: {
+                    y:  { beginAtZero: true, title: { display: true, text: 'KD' } },
+                    y1: { beginAtZero: true, position: 'right', grid: { drawOnChartArea: false },
+                        ticks: { callback: (v) => `${v}%` }, title: { display: true, text: 'MoM %' } }
+                }
+                }
+            });
+        }
 
       function updateAllMonthsLine(keys, totals){
         const hasMany = keys.length > 12;

@@ -34,9 +34,10 @@
       button:hover { filter: brightness(1.05); }
       .btn { background:#2b63ff; color:white; border:0; padding: 8px 12px; border-radius: 10px; font-weight: 600; cursor: pointer; }
       .btn:hover { filter: brightness(1.05); }
-      .muted { color:#9fb0d9; font-size: 14px; margin:6px 0 0; }
+      .btn.small { padding: 6px 8px; font-size: 12px; }
       .danger { background:#7a2c2c; }
       .ghost { background: transparent; border:1px solid #2a3c67; }
+      .muted { color:#9fb0d9; font-size: 14px; margin:6px 0 0; }
 
       .flash { padding: 10px 12px; border-radius: 10px; margin: 10px 0 0; }
       .flash.success { background:#0f2a18; border:1px solid #1f6c3d; color:#b8f3cf; }
@@ -86,7 +87,6 @@
       .err { color:#f3b8b8; font-size: 12px; }
       .success { color:#b8f3cf; }
     </style>
-    <!-- Optional datalist for categories -->
   </head>
   <body>
     <header>
@@ -247,11 +247,11 @@
             <table>
               <thead>
                 <tr>
-                  <th><input type="checkbox" id="checkAll" /></th>
                   <th>Date</th>
                   <th>Category</th>
                   <th>Description</th>
                   <th class="right">Amount (KD)</th>
+                  <th class="right">Actions</th>
                 </tr>
               </thead>
               <tbody id="previewTbody">
@@ -262,9 +262,13 @@
           <div id="previewErr" class="err" style="display:none;"></div>
         </div>
         <footer>
-          <div class="muted" id="previewHint">Review and edit any cell before importing.</div>
+          <div class="muted" id="previewHint">Review, edit, or delete rows. You can also download a CSV of what will be imported.</div>
           <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-            <span class="pill" id="selCount">0 selected</span>
+            <span class="pill" id="selCount">0 rows to import</span>
+            <span class="pill" id="removedBadge" style="display:none;">0 removed</span>
+            <button id="btnUndo" class="btn ghost" disabled>Undo delete</button>
+            <button id="btnReset" class="btn ghost">Reset</button>
+            <button id="btnDownload" class="btn ghost">Download CSV</button>
             <button id="btnImport" class="btn" disabled>Approve &amp; Import</button>
           </div>
         </footer>
@@ -346,10 +350,15 @@
       const previewTbody = document.getElementById('previewTbody');
       const previewErr = document.getElementById('previewErr');
       const btnImport = document.getElementById('btnImport');
-      const checkAll = document.getElementById('checkAll');
+      const btnUndo = document.getElementById('btnUndo');
+      const btnReset = document.getElementById('btnReset');
+      const btnDownload = document.getElementById('btnDownload');
       const selCount = document.getElementById('selCount');
+      const removedBadge = document.getElementById('removedBadge');
 
-      let previewRows = []; // source rows from server
+      let previewRows = [];      // original rows from server (for Reset)
+      let removedStack = [];     // stack of {rowObj, index} for Undo
+
       function openModal(){ backdrop.classList.add('open'); backdrop.setAttribute('aria-hidden','false'); }
       function closeModal(){ backdrop.classList.remove('open'); backdrop.setAttribute('aria-hidden','true'); }
 
@@ -370,48 +379,123 @@
         return ok;
       }
 
-      function updateSelectionCount(){
+      function updateCounts(){
         const rows = [...previewTbody.querySelectorAll('tr')];
-        const selected = rows.filter(r => r.querySelector('input.row-include')?.checked);
-        selCount.textContent = `${selected.length} selected`;
-        // Enable Approve only if all selected rows validate
-        const allValid = selected.every(validateRow);
-        btnImport.disabled = !(selected.length > 0 && allValid);
+        const count = rows.length;
+        const removed = removedStack.length;
+        selCount.textContent = `${count} row${count===1?'':'s'} to import`;
+        removedBadge.style.display = removed > 0 ? 'inline-block' : 'none';
+        removedBadge.textContent = `${removed} removed`;
+
+        const allValid = count > 0 && rows.every(validateRow);
+        btnImport.disabled = !allValid;
+        btnUndo.disabled = removed === 0;
       }
 
-      function buildRow(r, idx){
+      function buildRow(r){
         const tr = document.createElement('tr');
         tr.innerHTML = `
-          <td><input type="checkbox" class="row-include" checked /></td>
           <td><input type="date" name="date" value="${r.date || ''}" /></td>
           <td><input type="text" name="category" list="category-list" value="${(r.category||'').replace(/"/g,'&quot;')}" /></td>
           <td><input type="text" name="name" value="${(r.name||'').replace(/"/g,'&quot;')}" /></td>
           <td class="right"><input type="number" step="0.001" min="0" name="amount_kd" value="${fmt(r.amount_kd)}" style="text-align:right; width: 140px;" /></td>
+          <td class="right">
+            <button type="button" class="btn small danger" data-del>Delete</button>
+          </td>
         `;
-        // Validate on input/change
-        tr.addEventListener('input', () => updateSelectionCount());
-        tr.addEventListener('change', () => updateSelectionCount());
+        tr.addEventListener('input', updateCounts);
+        tr.addEventListener('change', updateCounts);
         return tr;
       }
 
       function renderPreviewTable(rows, meta){
         previewTbody.innerHTML = '';
-        for (let i=0; i<rows.length; i++){
-          previewTbody.appendChild(buildRow(rows[i], i));
+        for (const r of rows){
+          previewTbody.appendChild(buildRow(r));
         }
-        previewMeta.textContent = `Previewing ${rows.length} row(s)` + (meta.skipped ? ` • ${meta.skipped} skipped during parsing` : '') + (meta.capped ? ` • showing first 2000` : '');
-        checkAll.checked = true;
+        previewMeta.textContent =
+          `Previewing ${rows.length} row(s)` +
+          (meta && meta.skipped ? ` • ${meta.skipped} skipped during parsing` : '') +
+          (meta && meta.capped ? ` • showing first 2000` : '');
         previewErr.style.display = 'none';
-        updateSelectionCount();
+        removedStack = [];
+        updateCounts();
       }
 
-      // Toggle select all
-      checkAll.addEventListener('change', () => {
-        const all = checkAll.checked;
-        previewTbody.querySelectorAll('input.row-include').forEach(cb => { cb.checked = all; });
-        updateSelectionCount();
+      function rowToObj(tr){
+        return {
+          date: tr.querySelector('input[name="date"]').value,
+          category: tr.querySelector('input[name="category"]').value.trim(),
+          name: tr.querySelector('input[name="name"]').value.trim(),
+          amount_kd: tr.querySelector('input[name="amount_kd"]').value
+        };
+      }
+
+      // Delete / Undo / Reset
+      previewTbody.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-del]');
+        if (!btn) return;
+        const tr = btn.closest('tr');
+        const rows = [...previewTbody.querySelectorAll('tr')];
+        const idx = rows.indexOf(tr);
+        removedStack.push({ row: rowToObj(tr), index: idx });
+        tr.remove();
+        updateCounts();
       });
 
+      btnUndo.addEventListener('click', () => {
+        if (removedStack.length === 0) return;
+        const { row, index } = removedStack.pop();
+        const tr = buildRow(row);
+        const rows = [...previewTbody.querySelectorAll('tr')];
+        if (index >= 0 && index < rows.length) {
+          rows[index].before(tr);
+        } else {
+          previewTbody.appendChild(tr);
+        }
+        updateCounts();
+      });
+
+      btnReset.addEventListener('click', () => {
+        renderPreviewTable(previewRows, /*meta*/ null);
+      });
+
+      // Download CSV (what you see is what you get)
+      function toCSV(rows){
+        const header = ['date','category','name','amount_kd'];
+        const esc = (s) => {
+          s = String(s ?? '');
+          if (s.includes('"')) s = s.replace(/"/g,'""');
+          if (/[",\n\r]/.test(s)) s = `"${s}"`;
+          return s;
+        };
+        const lines = [header.join(',')];
+        for (const r of rows){
+          const amt = (Number(r.amount_kd)||0).toFixed(3);
+          lines.push([r.date, r.category, r.name, amt].map(esc).join(','));
+        }
+        // Add UTF-8 BOM so Excel opens Unicode correctly
+        const bom = "\uFEFF";
+        return bom + lines.join('\r\n');
+      }
+
+      btnDownload.addEventListener('click', () => {
+        const rows = [...previewTbody.querySelectorAll('tr')].map(rowToObj);
+        if (rows.length === 0){ previewErr.textContent = 'Nothing to download.'; previewErr.style.display = 'block'; return; }
+        const csv = toCSV(rows);
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const ts = new Date();
+        const pad = n => String(n).padStart(2,'0');
+        const fname = `expense-preview-${ts.getFullYear()}-${pad(ts.getMonth()+1)}-${pad(ts.getDate())}_${pad(ts.getHours())}${pad(ts.getMinutes())}.csv`;
+        const a = document.createElement('a');
+        a.href = url; a.download = fname; document.body.appendChild(a); a.click();
+        URL.revokeObjectURL(url); a.remove();
+      });
+
+      // Open/close modal & upload preview
+      function openModal(){ backdrop.classList.add('open'); backdrop.setAttribute('aria-hidden','false'); }
+      function closeModal(){ backdrop.classList.remove('open'); backdrop.setAttribute('aria-hidden','true'); }
       btnCloseModal.addEventListener('click', () => { closeModal(); });
 
       uploadForm.addEventListener('submit', async (e) => {
@@ -437,23 +521,13 @@
         }
       });
 
+      // Approve & Import
       btnImport.addEventListener('click', async () => {
-        // Gather selected & validated rows
-        const rows = [];
         const trs = [...previewTbody.querySelectorAll('tr')];
-        for (const tr of trs) {
-          const include = tr.querySelector('input.row-include').checked;
-          if (!include) continue;
-          if (!validateRow(tr)) { previewErr.textContent = 'Please fix highlighted rows before importing.'; previewErr.style.display = 'block'; return; }
-          rows.push({
-            date: tr.querySelector('input[name="date"]').value,
-            category: tr.querySelector('input[name="category"]').value.trim(),
-            name: tr.querySelector('input[name="name"]').value.trim(),
-            amount_kd: tr.querySelector('input[name="amount_kd"]').value
-          });
-        }
-        if (rows.length === 0) { previewErr.textContent = 'No rows selected.'; previewErr.style.display = 'block'; return; }
+        if (trs.length === 0){ previewErr.textContent = 'No rows to import.'; previewErr.style.display = 'block'; return; }
+        if (!trs.every(validateRow)){ previewErr.textContent = 'Please fix highlighted rows before importing.'; previewErr.style.display = 'block'; return; }
 
+        const rows = trs.map(rowToObj);
         btnImport.disabled = true; btnImport.textContent = 'Importing...';
         try {
           const res = await fetch('/transactions/import-commit', {
@@ -463,7 +537,6 @@
           });
           const data = await res.json();
           if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-          // Success — reload to show new rows
           closeModal();
           window.location.reload();
         } catch (err) {
