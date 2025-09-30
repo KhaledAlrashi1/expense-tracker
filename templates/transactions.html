@@ -271,6 +271,8 @@
           {% if items and items|length > 0 %}
             <div class="toolbar" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:4px 0 8px;">
               <input type="text" id="txnSearch" placeholder="Search description…" />
+              <input type="date" id="txnFrom" />
+              <input type="date" id="txnTo" />
               <select id="txnFilterCat">
                 <option value="">All categories</option>
                 {% for c in categories %}<option value="{{ c.name }}">{{ c.name }}</option>{% endfor %}
@@ -474,12 +476,14 @@
       }
 
       function buildRow(r){
+        const showAmt = (r.amount_kd !== undefined && r.amount_kd !== null && String(r.amount_kd).trim() !== '')
+                        ? fmt(r.amount_kd) : '';
         const tr = document.createElement('tr');
         tr.innerHTML = `
           <td><input type="date" name="date" value="${r.date || ''}" /></td>
           <td><input type="text" name="category" list="category-list" value="${(r.category||'').replace(/"/g,'&quot;')}" /></td>
           <td><input type="text" name="name" value="${(r.name||'').replace(/"/g,'&quot;')}" /></td>
-          <td class="right"><input type="number" step="0.001" min="0" name="amount_kd" value="${fmt(r.amount_kd)}" style="text-align:right; width: 140px;" /></td>
+          <td class="right"><input type="number" step="0.001" min="0" name="amount_kd" value="${showAmt}" style="text-align:right; width: 140px;" /></td>
           <td class="right">
             <button type="button" class="btn small danger" data-del>Delete</button>
           </td>
@@ -709,9 +713,11 @@
         }
       });
 
-      // === Lightweight table filter ===
+      // === Lightweight table filter (search + date range + category) ===
       (function(){
         const q = document.getElementById('txnSearch');
+        const fromEl = document.getElementById('txnFrom');
+        const toEl = document.getElementById('txnTo');
         const cat = document.getElementById('txnFilterCat');
         const clear = document.getElementById('txnClear');
         const count = document.getElementById('txnCount');
@@ -722,24 +728,49 @@
         // show full text on hover
         document.querySelectorAll('#txn-table td.col-name').forEach(td => td.title = td.textContent.trim());
 
+        function parseISO(d){
+          if(!d) return null;
+          const parts = d.split('-'); // yyyy-mm-dd
+          if(parts.length !== 3) return null;
+          return new Date(Number(parts[0]), Number(parts[1])-1, Number(parts[2]));
+        }
+
         function apply(){
           const term = (q?.value || '').trim().toLowerCase();
           const cval = (cat?.value || '').trim();
+          const from = parseISO(fromEl?.value || '');
+          const to = parseISO(toEl?.value || '');
           let shown = 0;
 
           [...tbody.rows].forEach(tr => {
             const desc = tr.querySelector('.col-name')?.textContent.toLowerCase() || '';
             const c = tr.querySelector('.col-cat')?.textContent || '';
-            const match = (!term || desc.includes(term)) && (!cval || c === cval);
+            const dtxt = tr.querySelector('.col-date')?.textContent || '';
+            const d = parseISO(dtxt);
+
+            let match = (!term || desc.includes(term)) && (!cval || c === cval);
+            if (match && (from || to)) {
+              if (!d) match = false;
+              if (match && from && d < from) match = false;
+              if (match && to && d > to) match = false;
+            }
+
             tr.style.display = match ? '' : 'none';
             if (match) shown++;
           });
           if (count) count.textContent = shown ? `${shown} shown` : 'No matches';
         }
 
+        // listeners
         q?.addEventListener('input', apply);
+        fromEl?.addEventListener('change', apply);
+        toEl?.addEventListener('change', apply);
         cat?.addEventListener('change', apply);
-        clear?.addEventListener('click', () => { if(q) q.value=''; if(cat) cat.value=''; apply(); });
+        clear?.addEventListener('click', () => {
+          if(q) q.value=''; if(cat) cat.value='';
+          if(fromEl) fromEl.value=''; if(toEl) toEl.value='';
+          apply();
+        });
 
         // initial
         apply();
