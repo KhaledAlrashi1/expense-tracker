@@ -9,6 +9,9 @@ from flask import Flask, render_template, request, redirect, url_for, jsonify, f
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.sql import func
 
+import sqlite3, re, shutil, tempfile
+from pathlib import Path
+
 # Optional: pandas for CSV/Excel import
 try:
     import pandas as pd  # type: ignore
@@ -103,6 +106,124 @@ def _parse_date(s: str | None) -> date:
 
 def _parse_amount(s: str | None) -> Decimal:
     return Decimal((s or "").replace(",", "").strip() or "0")
+
+
+# --- Mac Messages (iMessage/SMS) ingestion helpers ---
+
+# Default path to the Messages database on macOS
+DEFAULT_MESSAGES_DB = str(Path.home() / "Library" / "Messages" / "chat.db")
+
+# Arabic-Indic digits → ASCII
+ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+
+def _normalize_digits(s: str) -> str:
+    return (s or "").translate(ARABIC_DIGITS)
+
+# Example KFH debit message:
+# "دفع نقاط بيع Talabat ... - خصم 3.600 د.ك حسابك xx243 رصيدك 249.849 د.ك"
+_amount_re = re.compile(r"خصم\s+([0-9\u0660-\u0669\.,]+)\s*د\.?\s*ك", re.U)
+_desc_re   = re.compile(r"(?:دفع\s+نقاط\s+بيع|شراء|سداد)\s+(.+?)(?:\s*[-–]\s*|\s+خصم|$)", re.U)
+
+def parse_kfh_sms(text: str) -> tuple[str|None, str|None]:
+    """
+    Returns (description, amount_kd) when found; otherwise (None, None or amount).
+    """
+    t = _normalize_digits(text or "").replace("\u200f","").replace("\u200e","")
+    # amount
+    amt = None
+    m = _amount_re.search(t)
+    if m:
+        raw = m.group(1).replace(",", "")
+        try:
+            amt = f"{float(raw):.3f}"
+        except Exception:
+            amt = None
+    # description (merchant)
+    desc = None
+    m2 = _desc_re.search(t)
+    if m2:
+        # clean backslashes & extra spaces
+        desc = re.sub(r"\s+", " ", m2.group(1).replace("\\", " / ")).strip()
+    return desc, amt
+
+def _backup_messages_db(src: str) -> str:
+    """
+    Copy the Messages DB (and -wal/-shm if present) to a temp snapshot
+    so we can read it safely even if Messages is open.
+    """
+    src_path = Path(src)
+    if not src_path.exists():
+        raise FileNotFoundError(f"Messages DB not found at {src}")
+    tmpdir = Path(tempfile.mkdtemp(prefix="msgdb_"))
+    dst = tmpdir / "chat.db"
+    shutil.copy2(src_path, dst)
+    for suffix in ("-wal", "-shm"):
+        p = Path(str(src_path) + suffix)
+        if p.exists():
+            shutil.copy2(p, tmpdir / (dst.name + suffix))
+    return str(dst)
+
+def fetch_kfh_rows(
+    sender: str = "KFH",
+    since: str | None = None,   # "YYYY-MM-DD"
+    until: str | None = None,   # "YYYY-MM-DD"
+    db_path: str | None = None,
+    limit: int | None = None
+):
+    """
+    Yields dicts: {date, category, name, amount_kd, raw}
+    - date: YYYY-MM-DD (localtime)
+    - category: default 'Uncategorized'
+    - name: merchant/description parsed from SMS (you can edit in the modal)
+    - amount_kd: string with 3 decimals
+    - raw: original SMS text (useful for auditing)
+    """
+    dbp = db_path or DEFAULT_MESSAGES_DB
+    snap = _backup_messages_db(dbp)
+    conn = sqlite3.connect(f"file:{snap}?mode=ro", uri=True)
+    try:
+        cur = conn.cursor()
+        params = []
+        where = ["message.is_from_me = 0", "message.text IS NOT NULL"]
+        # 'handle.id' is the address (for bank short codes, it's often literally 'KFH')
+        where.append("LOWER(handle.id) = LOWER(?)")
+        params.append(sender)
+
+        # Apple "absolute" time (nanoseconds since 2001-01-01) → Unix seconds:
+        # (message.date/1e9) + 978307200
+        if since:
+            where.append("((message.date/1000000000) + 978307200) >= strftime('%s', ?)")
+            params.append(since)
+        if until:
+            where.append("((message.date/1000000000) + 978307200) <= strftime('%s', ?)")
+            params.append(until)
+
+        wh = " AND ".join(where)
+        lim = f" LIMIT {int(limit)}" if limit else ""
+        sql = f"""
+            SELECT (message.date / (CASE WHEN message.date > 100000000000 THEN 1000000000 ELSE 1 END)) + 978307200 AS uts, message.text
+            FROM message
+            JOIN handle ON message.handle_id = handle.ROWID
+            WHERE {wh}
+            ORDER BY uts DESC
+            {lim}
+        """
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+        for uts, text in rows:
+            # uts is Unix seconds (float/int)
+            d = datetime.fromtimestamp(uts).date()
+            desc, amt = parse_kfh_sms(text or "")
+            if amt:
+                yield {
+                    "date": d.isoformat(),
+                    "category": "Uncategorized",
+                    "name": desc or "KFH transaction",
+                    "amount_kd": amt,
+                    "raw": text,
+                }
+    finally:
+        conn.close()
 
 
 # --- shared mapping for uploads ---
@@ -405,7 +526,120 @@ def register_routes(app: Flask) -> None:
     def api_transactions():
         items = Transaction.query.order_by(Transaction.date.desc(), Transaction.id.desc()).all()
         return jsonify([t.to_dict() for t in items])
+    
+    @app.route("/messages/preview")
+    def messages_preview():
+        """
+        Preview transactions from Mac Messages DB.
 
+        Query params:
+        - sender  : exact handle.id (e.g., 'KFH'). If omitted, you can use 'q'.
+        - q       : text contains keyword (e.g., 'خصم'). If both provided, both apply.
+        - since   : 'YYYY-MM-DD' (optional)
+        - until   : 'YYYY-MM-DD' (optional)
+        - limit   : int (optional) -> applies AFTER parsing (so you get up to N txns)
+        - max_fetch : int (optional) -> how many raw messages to scan first (default smart)
+        - include_unparsed : '1' or 'true' to include rows without parsed amount (edit/delete in modal)
+        - db_path : override chat.db path (optional)
+        """
+        sender = request.args.get("sender")
+        q = request.args.get("q")
+        since = request.args.get("since")
+        until = request.args.get("until")
+        limit = request.args.get("limit", type=int)
+        include_unparsed = (request.args.get("include_unparsed", "0").lower() in ("1", "true", "yes"))
+        db_path = request.args.get("db_path")
+
+        # How many raw messages to scan before we slice after-parse:
+        # If you asked for limit N, scan ~5N (cap reasonable); else 1000.
+        default_scan = 1000
+        if limit and limit > 0:
+            default_scan = min(max(limit * 5, 200), 5000)
+        max_fetch = request.args.get("max_fetch", type=int) or default_scan
+
+        try:
+            snap = _backup_messages_db(db_path or DEFAULT_MESSAGES_DB)
+            conn = sqlite3.connect(f"file:{snap}?mode=ro", uri=True)
+            try:
+                cur = conn.cursor()
+                params = []
+                where = ["message.is_from_me = 0", "message.text IS NOT NULL"]
+
+                if sender:
+                    where.append("LOWER(handle.id) = LOWER(?)")
+                    params.append(sender)
+
+                if q:
+                    where.append("message.text LIKE ?")
+                    params.append(f"%{q}%")
+
+                if since:
+                    where.append("( (message.date / (CASE WHEN message.date > 100000000000 THEN 1000000000 ELSE 1 END)) + 978307200 ) >= strftime('%s', ?)")
+                    params.append(since)
+                if until:
+                    where.append("( (message.date / (CASE WHEN message.date > 100000000000 THEN 1000000000 ELSE 1 END)) + 978307200 ) <= strftime('%s', ?)")
+                    params.append(until)
+
+                sql = f"""
+                    SELECT
+                    (message.date / (CASE WHEN message.date > 100000000000 THEN 1000000000 ELSE 1 END)) + 978307200 AS uts,
+                    message.text
+                    FROM message
+                    JOIN handle ON message.handle_id = handle.ROWID
+                    WHERE {' AND '.join(where)}
+                    ORDER BY uts DESC
+                    LIMIT {int(max_fetch)}
+                """
+                cur.execute(sql, params)
+
+                scanned = 0
+                parsed_rows = []
+                unparsed_rows = []
+
+                for uts, text in cur.fetchall():
+                    scanned += 1
+                    d_iso = datetime.fromtimestamp(uts).date().isoformat()
+                    desc, amt = parse_kfh_sms(text or "")
+                    if amt:
+                        parsed_rows.append({
+                            "date": d_iso,
+                            "category": "Uncategorized",
+                            "name": desc or "KFH transaction",
+                            "amount_kd": amt,
+                            "raw": text
+                        })
+                    elif include_unparsed:
+                        # Include message but leave amount blank; you can edit or delete in the modal
+                        fallback_name = (desc or (text or "")[:80]).replace("\n"," ").strip()
+                        unparsed_rows.append({
+                            "date": d_iso,
+                            "category": "Uncategorized",
+                            "name": fallback_name,
+                            "amount_kd": "",
+                            "raw": text
+                        })
+
+                # Merge rows: parsed first, then (optionally) unparsed
+                out = parsed_rows
+                if include_unparsed:
+                    out = parsed_rows + unparsed_rows
+
+                # Apply LIMIT AFTER PARSE (so you actually get up to N transactions)
+                if limit and limit > 0:
+                    out = out[:limit]
+
+                return jsonify({
+                    "ok": True,
+                    "count": len(out),
+                    "rows": out,
+                    "scanned": scanned,
+                    "parsed": len(parsed_rows),
+                    "unparsed_included": include_unparsed,
+                })
+            finally:
+                conn.close()
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
 
 # -----------------------------------------------------------------------------
 # CLI helpers (init DB, seed sample data)

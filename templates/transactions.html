@@ -86,6 +86,47 @@
       .invalid { border-color: #b44; background: #2a1111; }
       .err { color:#f3b8b8; font-size: 12px; }
       .success { color:#b8f3cf; }
+
+      /* --- Minimal + clean polish --- */
+
+      /* Layout: give table more room */
+      @media (min-width: 1100px){
+        .grid { grid-template-columns: 460px minmax(0,1fr); gap: 20px; }
+      }
+
+      /* Cards: softer surface + border */
+      .card { background:#0e162b; border-color:#1a2746; box-shadow:0 8px 24px rgba(0,0,0,.35); }
+      section.card > section.card { background:#0b1327; border-color:#192744; }
+
+      /* Inputs: smoother focus */
+      input, select, textarea, button { transition: border-color .15s, box-shadow .15s, background .15s; }
+      input:focus-visible, select:focus-visible, textarea:focus-visible {
+        outline: none; border-color:#3b6cff; box-shadow:0 0 0 3px rgba(59,108,255,.15);
+      }
+      textarea { min-height: 88px; }
+
+      /* Table: sticky header, zebra, clamp, aligned numbers */
+      .table-wrap { max-height: 600px; }
+      thead th { position: sticky; top: 0; background:#0e162b; z-index: 1; }
+      tbody tr:nth-child(even){ background: rgba(255,255,255,0.02); }
+      td.col-name{
+        display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2;
+        overflow:hidden; max-width: 48ch;
+      }
+      td.col-amt, td.right{ font-variant-numeric: tabular-nums; }
+
+      /* Actions: subtle until needed */
+      td.col-actions .btn{ opacity:0; transform:translateX(8px); transition:opacity .15s, transform .15s; }
+      tbody tr:hover td.col-actions .btn{ opacity:1; transform:translateX(0); }
+
+      /* Danger button less shouty until hover */
+      .btn.danger{ background:#433033; }
+      tbody tr:hover .btn.danger{ background:#7a2c2c; }
+
+      /* Typography + spacing */
+      label{ font-size:12px; }
+      .card h2{ margin-bottom:12px; }
+      .hint{ opacity:.8; }
     </style>
   </head>
   <body>
@@ -130,7 +171,7 @@
                     <option value="{{ c.name }}">{{ c.name }}</option>
                   {% endfor %}
                 </select>
-                <span class="hint">Manage or add categories below.</span>
+                <!-- <span class="hint">Manage or add categories below.</span> -->
               </label>
               <label>
                 Amount (KD)
@@ -182,6 +223,7 @@
             {% endif %}
           </details>
 
+          <!-- Import from CSV/Excel -->
           <section class="card" style="margin-top:14px;">
             <h2>Import from CSV/Excel</h2>
             <form id="uploadForm" method="post" action="/transactions/upload" enctype="multipart/form-data">
@@ -190,7 +232,36 @@
                 <button type="submit" class="btn">Preview &amp; Import</button>
                 <span id="uploadErr" class="err" style="display:none;"></span>
               </div>
-              <p class="hint">Required columns (header row): <strong>Date</strong>, <strong>Category</strong>, <strong>Transaction Description</strong>, <strong>Amount (KWD)</strong>.</p>
+              <!-- <p class="hint">Required columns (header row): <strong>Date</strong>, <strong>Category</strong>, <strong>Transaction Description</strong>, <strong>Amount (KWD)</strong>.</p> -->
+            </form>
+          </section>
+          <!-- ADD directly under the CSV/Excel section (inside the same left card) -->
+          <section class="card" style="margin-top:14px;">
+            <h2>Import from Messages (KFH)</h2>
+            <form id="msgForm">
+              <div class="row-3">
+                <label>
+                  Sender
+                  <input type="text" id="msgSender" value="KFH" />
+                </label>
+                <label>
+                  Since
+                  <input type="date" id="msgSince" />
+                </label>
+                <label>
+                  Limit
+                  <input type="number" id="msgLimit" min="1" step="1" value="10" />
+                </label>
+              </div>
+              <div class="actions" style="margin-top:8px;">
+                <label style="display:flex; align-items:center; gap:8px; font-size:13px;">
+                  <input type="checkbox" id="msgUnparsed" checked />
+                  <!-- Include unparsed -->
+                </label>
+                <button type="submit" class="btn">Preview from Messages</button>
+                <span id="msgErr" class="err" style="display:none;"></span>
+              </div>
+              <!-- <p class="hint">Tip: set <em>Since</em> to about a week ago; keep <em>Include unparsed</em> on so you can delete or edit rows in the preview.</p> -->
             </form>
           </section>
         </section>
@@ -198,6 +269,15 @@
         <section class="card">
           <h2>Latest Transactions</h2>
           {% if items and items|length > 0 %}
+            <div class="toolbar" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:4px 0 8px;">
+              <input type="text" id="txnSearch" placeholder="Search description…" />
+              <select id="txnFilterCat">
+                <option value="">All categories</option>
+                {% for c in categories %}<option value="{{ c.name }}">{{ c.name }}</option>{% endfor %}
+              </select>
+              <button id="txnClear" class="btn ghost small" type="button">Clear</button>
+              <span class="muted" id="txnCount"></span>
+            </div>
             <div class="table-wrap">
               <table id="txn-table">
                 <thead>
@@ -349,18 +429,19 @@
       const previewMeta = document.getElementById('previewMeta');
       const previewTbody = document.getElementById('previewTbody');
       const previewErr = document.getElementById('previewErr');
+      const selCount = document.getElementById('selCount');
+      const removedBadge = document.getElementById('removedBadge');
       const btnImport = document.getElementById('btnImport');
       const btnUndo = document.getElementById('btnUndo');
       const btnReset = document.getElementById('btnReset');
       const btnDownload = document.getElementById('btnDownload');
-      const selCount = document.getElementById('selCount');
-      const removedBadge = document.getElementById('removedBadge');
 
       let previewRows = [];      // original rows from server (for Reset)
       let removedStack = [];     // stack of {rowObj, index} for Undo
 
       function openModal(){ backdrop.classList.add('open'); backdrop.setAttribute('aria-hidden','false'); }
       function closeModal(){ backdrop.classList.remove('open'); backdrop.setAttribute('aria-hidden','true'); }
+      btnCloseModal.addEventListener('click', () => { closeModal(); });
 
       function fmt(n){ return (Number(n)||0).toFixed(3); }
 
@@ -493,34 +574,6 @@
         URL.revokeObjectURL(url); a.remove();
       });
 
-      // Open/close modal & upload preview
-      function openModal(){ backdrop.classList.add('open'); backdrop.setAttribute('aria-hidden','false'); }
-      function closeModal(){ backdrop.classList.remove('open'); backdrop.setAttribute('aria-hidden','true'); }
-      btnCloseModal.addEventListener('click', () => { closeModal(); });
-
-      uploadForm.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        uploadErr.style.display = 'none'; uploadErr.textContent = '';
-        const file = fileInput.files && fileInput.files[0];
-        if (!file) { uploadErr.textContent = 'Please choose a file.'; uploadErr.style.display = 'inline'; return; }
-
-        const fd = new FormData();
-        fd.append('file', file);
-        try {
-          const res = await fetch('/transactions/upload-preview', { method: 'POST', body: fd });
-          const data = await res.json();
-          if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-
-          previewRows = data.preview_rows || [];
-          renderPreviewTable(previewRows, { skipped: data.skipped || 0, capped: !!data.capped });
-          openModal();
-        } catch (err) {
-          console.error(err);
-          uploadErr.textContent = String(err.message || err);
-          uploadErr.style.display = 'inline';
-        }
-      });
-
       // Approve & Import
       btnImport.addEventListener('click', async () => {
         const trs = [...previewTbody.querySelectorAll('tr')];
@@ -552,6 +605,146 @@
       backdrop.addEventListener('click', (e) => {
         if (e.target === backdrop) closeModal();
       });
+
+      // === Import from Messages → Preview Modal (with smart fallback) ===
+      (function(){
+        const msgForm = document.getElementById('msgForm');
+        if (!msgForm) return;
+
+        const senderEl = document.getElementById('msgSender');
+        const sinceEl  = document.getElementById('msgSince');
+        const limitEl  = document.getElementById('msgLimit');
+        const unparsedEl = document.getElementById('msgUnparsed');
+        const msgErr   = document.getElementById('msgErr');
+
+        // Prefill "Since" = 7 days ago if empty
+        (function initSince(){
+          if (!sinceEl.value){
+            const now = new Date();
+            const weekAgo = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7);
+            const mm = String(weekAgo.getMonth()+1).padStart(2,'0');
+            const dd = String(weekAgo.getDate()).padStart(2,'0');
+            sinceEl.value = `${weekAgo.getFullYear()}-${mm}-${dd}`;
+          }
+        })();
+
+        msgForm.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          msgErr.style.display = 'none'; msgErr.textContent = '';
+
+          const sender = (senderEl.value || 'KFH').trim();
+          const since  = (sinceEl.value || '').trim();
+          const limit  = parseInt(limitEl.value || '50', 10);
+
+          const buildParams = (opts = {}) => {
+            const p = new URLSearchParams();
+            if (sender) p.set('sender', sender);
+            const sinceVal = (Object.prototype.hasOwnProperty.call(opts, 'since') ? opts.since : since);
+            if (sinceVal) p.set('since', sinceVal);
+            if (Number.isFinite(limit) && limit > 0) p.set('limit', String(limit));
+            if (unparsedEl.checked || opts.forceUnparsed) p.set('include_unparsed', '1');
+            if (opts.maxFetch) p.set('max_fetch', String(opts.maxFetch));
+            return p;
+          };
+
+          async function load(params, note){
+            const res = await fetch('/messages/preview?' + params.toString(), { headers: { 'Accept':'application/json' }});
+            const data = await res.json();
+            if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+            const rows = data.rows || [];
+            if (rows.length > 0){
+              previewRows = rows;
+              if (typeof data.scanned !== 'undefined' && typeof data.parsed !== 'undefined') {
+                previewMeta.textContent = `Previewing ${rows.length} row(s) • scanned ${data.scanned}, parsed ${data.parsed}` + (data.unparsed_included ? ' • incl. unparsed' : '') + (note ? ` • ${note}` : '');
+              } else {
+                previewMeta.textContent = `Previewing ${rows.length} row(s)` + (note ? ` • ${note}` : '');
+              }
+              renderPreviewTable(previewRows, /*meta*/ null);
+              openModal();
+              return true;
+            }
+            return false;
+          }
+
+          try {
+            // 1) Try exactly what you asked for
+            if (await load(buildParams(), 'from Messages')) return;
+
+            // 2) Fallback: drop date filter + force unparsed + widen scan window
+            const maxFetch = Math.max((limit || 50) * 5, 1000);
+            const p2 = buildParams({ since: '', forceUnparsed: true, maxFetch });
+            if (await load(p2, 'broadened (no date filter)')) return;
+
+            msgErr.textContent = 'No rows found. Try clearing “Since”, increasing Limit, or opening the KFH conversation in Messages to pull more history locally.';
+            msgErr.style.display = 'inline';
+          } catch (err) {
+            console.error(err);
+            msgErr.textContent = String(err.message || err);
+            msgErr.style.display = 'inline';
+          }
+        });
+      })();
+
+      // CSV/Excel upload → preview modal
+      uploadForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        uploadErr.style.display = 'none'; uploadErr.textContent = '';
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) { uploadErr.textContent = 'Please choose a file.'; uploadErr.style.display = 'inline'; return; }
+
+        const fd = new FormData();
+        fd.append('file', file);
+        try {
+          const res = await fetch('/transactions/upload-preview', { method: 'POST', body: fd });
+          const data = await res.json();
+          if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+          previewRows = data.preview_rows || [];
+          renderPreviewTable(previewRows, { skipped: data.skipped || 0, capped: !!data.capped });
+          openModal();
+        } catch (err) {
+          console.error(err);
+          uploadErr.textContent = String(err.message || err);
+          uploadErr.style.display = 'inline';
+        }
+      });
+
+      // === Lightweight table filter ===
+      (function(){
+        const q = document.getElementById('txnSearch');
+        const cat = document.getElementById('txnFilterCat');
+        const clear = document.getElementById('txnClear');
+        const count = document.getElementById('txnCount');
+        const tbody = document.querySelector('#txn-table tbody');
+
+        if (!tbody) return;
+
+        // show full text on hover
+        document.querySelectorAll('#txn-table td.col-name').forEach(td => td.title = td.textContent.trim());
+
+        function apply(){
+          const term = (q?.value || '').trim().toLowerCase();
+          const cval = (cat?.value || '').trim();
+          let shown = 0;
+
+          [...tbody.rows].forEach(tr => {
+            const desc = tr.querySelector('.col-name')?.textContent.toLowerCase() || '';
+            const c = tr.querySelector('.col-cat')?.textContent || '';
+            const match = (!term || desc.includes(term)) && (!cval || c === cval);
+            tr.style.display = match ? '' : 'none';
+            if (match) shown++;
+          });
+          if (count) count.textContent = shown ? `${shown} shown` : 'No matches';
+        }
+
+        q?.addEventListener('input', apply);
+        cat?.addEventListener('change', apply);
+        clear?.addEventListener('click', () => { if(q) q.value=''; if(cat) cat.value=''; apply(); });
+
+        // initial
+        apply();
+      })();
     </script>
   </body>
 </html>
+
