@@ -127,6 +127,23 @@
       label{ font-size:12px; }
       .card h2{ margin-bottom:12px; }
       .hint{ opacity:.8; }
+
+      .more-wrap {
+        display: none;               /* hidden until we know there's more */
+        justify-content: center;
+        padding: 14px 8px 18px;
+        border-top: 1px dashed #1f2a44;
+        background: linear-gradient(180deg, rgba(14,22,43,0) 0%, rgba(14,22,43,.85) 20%, rgba(14,22,43,1) 100%);
+      }
+      .more-wrap.show { display: flex; }
+      .more-wrap .btn { min-width: 140px; }
+
+      .fade-in { animation: fadeInUp .18s ease-out; }
+      @keyframes fadeInUp {
+        from { opacity: 0; transform: translateY(6px); }
+        to   { opacity: 1; transform: translateY(0); }
+      }
+
     </style>
   </head>
   <body>
@@ -263,50 +280,42 @@
 
         <section class="card">
           <h2>Latest Transactions</h2>
-          {% if items and items|length > 0 %}
-            <div class="toolbar" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:4px 0 8px;">
-              <input type="text" id="txnSearch" placeholder="Search description…" />
-              <input type="date" id="txnFrom" />
-              <input type="date" id="txnTo" />
-              <select id="txnFilterCat">
-                <option value="">All categories</option>
-                {% for c in categories %}<option value="{{ c.name }}">{{ c.name }}</option>{% endfor %}
-              </select>
-              <button id="txnClear" class="btn ghost small" type="button">Clear</button>
-              <span class="muted" id="txnCount"></span>
+
+          <div class="toolbar" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:4px 0 8px;">
+            <input type="text" id="txnSearch" placeholder="Search description or category…" />
+            <select id="txnFilterCat">
+              <option value="">All categories</option>
+              {% for c in categories %}<option value="{{ c.name }}">{{ c.name }}</option>{% endfor %}
+            </select>
+            <button id="txnClear" class="btn ghost small" type="button">Clear</button>
+
+            <span class="muted" id="txnCount" style="margin-left:auto;"></span>
+            <button id="txnMore" class="btn small" type="button">More</button>
+          </div>
+
+          <div class="table-wrap" id="txnWrap">
+            <table id="txn-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Category</th>
+                  <th>Description</th>
+                  <th class="right">Amount (KD)</th>
+                  <th class="right">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="txnTbody">
+                <!-- rows injected by JS -->
+              </tbody>
+            </table>
+
+            <!-- New: load more at the end -->
+            <div id="moreWrap" class="more-wrap">
+              <button id="btnMore" class="btn ghost">More</button>
             </div>
-            <div class="table-wrap">
-              <table id="txn-table">
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Category</th>
-                    <th>Description</th>
-                    <th class="right">Amount (KD)</th>
-                    <th class="right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {% for t in items %}
-                    <tr>
-                      <td class="col-date">{{ t.date.strftime('%Y-%m-%d') if t.date else '' }}</td>
-                      <td class="col-cat">{{ t.category }}</td>
-                      <td class="col-name">{{ t.name }}</td>
-                      <td class="right col-amt">{{ '%.3f'|format(t.amount_kd) }}</td>
-                      <td class="right col-actions">
-                        <form method="post" action="/transactions/{{ t.id }}/delete" data-confirm="Delete this transaction?">
-                          <button class="danger btn" type="submit">Delete</button>
-                        </form>
-                      </td>
-                    </tr>
-                  {% endfor %}
-                </tbody>
-              </table>
-            </div>
-          {% else %}
-            <div class="empty">No transactions yet. Add your first one with the form on the left or import a file.</div>
-          {% endif %}
-          <p class="muted" style="margin-top:10px;">Only the most recent 100 are shown.</p>
+          </div>
+
+          <p class="muted" style="margin-top:10px;">Newest first. Showing 20 at a time.</p>
         </section>
       </div>
     </main>
@@ -683,68 +692,248 @@
     })();
 
 
-      // === Lightweight table filter (search + date range + category) ===
+      // === Paginated table: search (name/category), 20 at a time, "More" appends ===
       (function(){
-        const q = document.getElementById('txnSearch');
-        const fromEl = document.getElementById('txnFrom');
-        const toEl = document.getElementById('txnTo');
-        const cat = document.getElementById('txnFilterCat');
-        const clear = document.getElementById('txnClear');
+        const tbody = document.getElementById('txnTbody');
+        const search = document.getElementById('txnSearch');
+        const catSel = document.getElementById('txnFilterCat');
+        const clearBtn = document.getElementById('txnClear');
         const count = document.getElementById('txnCount');
-        const tbody = document.querySelector('#txn-table tbody');
+        const moreBtn = document.getElementById('txnMore');
+
+        const state = { q:'', category:'', offset:0, limit:20, total:0, loading:false };
+
+        function esc(s){
+          return String(s ?? '')
+            .replace(/&/g,'&amp;')
+            .replace(/</g,'&lt;')
+            .replace(/>/g,'&gt;')
+            .replace(/"/g,'&quot;');
+        }
+
+        function rowHtml(t){
+          const d = esc(t.date || '');
+          const c = esc(t.category || '');
+          const n = esc(t.name || '');
+          const amt = (Number(t.amount_kd)||0).toFixed(3);
+          // We keep the same delete form (it will reload the page on delete, which is OK for now)
+          return `<tr>
+            <td class="col-date">${d}</td>
+            <td class="col-cat">${c}</td>
+            <td class="col-name" title="${n}">${n}</td>
+            <td class="right col-amt">${amt}</td>
+            <td class="right col-actions">
+              <form method="post" action="/transactions/${t.id}/delete" data-confirm="Delete this transaction?">
+                <button class="danger btn" type="submit">Delete</button>
+              </form>
+            </td>
+          </tr>`;
+        }
+
+        async function fetchPage({reset=false} = {}){
+          if (state.loading) return;
+          state.loading = true;
+          moreBtn.disabled = true;
+
+          const params = new URLSearchParams();
+          if (state.q) params.set('q', state.q);
+          if (state.category) params.set('category', state.category);
+          params.set('limit', state.limit);
+          params.set('offset', state.offset);
+
+          try{
+            const res = await fetch('/api/transactions/search?' + params.toString(), { headers: { 'Accept':'application/json' }});
+            const data = await res.json();
+            if(!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+
+            if (reset) tbody.innerHTML = '';
+
+            (data.items || []).forEach(t => {
+              tbody.insertAdjacentHTML('beforeend', rowHtml(t));
+            });
+
+            // update state
+            state.total = Number(data.total || 0);
+            state.offset += (data.items || []).length;
+
+            const shown = tbody.rows.length;
+            count.textContent = shown ? `${shown} shown of ${state.total}` : 'No matches';
+
+            // toggle "More"
+            if (state.offset < state.total) {
+              moreBtn.style.display = 'inline-block';
+              moreBtn.disabled = false;
+            } else {
+              moreBtn.style.display = 'none';
+            }
+
+            // restore confirm-on-delete on dynamically added forms
+            document.querySelectorAll('form[data-confirm]').forEach(f => {
+              f.addEventListener('submit', function(e){
+                const msg = f.getAttribute('data-confirm') || 'Are you sure?';
+                if (!confirm(msg)) { e.preventDefault(); }
+              }, { once:true }); // attach once per form
+            });
+
+          } catch (err){
+            console.error(err);
+            count.textContent = 'Error loading';
+            moreBtn.disabled = false;
+          } finally {
+            state.loading = false;
+          }
+        }
+
+        function apply(reset=true){
+          state.q = (search.value || '').trim();
+          state.category = (catSel.value || '').trim();
+          state.offset = 0;
+          fetchPage({reset:true});
+        }
+
+        // Debounce typing for search
+        let deb;
+        search.addEventListener('input', () => {
+          clearTimeout(deb);
+          deb = setTimeout(() => apply(true), 250);
+        });
+
+        catSel.addEventListener('change', () => apply(true));
+        clearBtn.addEventListener('click', () => {
+          search.value = '';
+          catSel.value = '';
+          apply(true);
+        });
+
+        moreBtn.addEventListener('click', () => fetchPage({reset:false}));
+
+        // initial load (latest 20)
+        apply(true);
+      })();
+
+      (function(){
+        const tbody     = document.getElementById('txnTbody') || document.querySelector('#txn-table tbody');
+        const btnMore   = document.getElementById('btnMore');
+        const moreWrap  = document.getElementById('moreWrap');
+        const qInput    = document.getElementById('txnSearch');     // optional
+        const catInput  = document.getElementById('txnFilterCat');  // optional
 
         if (!tbody) return;
 
-        // show full text on hover
-        document.querySelectorAll('#txn-table td.col-name').forEach(td => td.title = td.textContent.trim());
+        const state = {
+          q: '',
+          cat: '',
+          limit: 20,
+          offset: 0,
+          loading: false,
+          hasMore: false,
+        };
 
-        function parseISO(d){
-          if(!d) return null;
-          const parts = d.split('-'); // yyyy-mm-dd
-          if(parts.length !== 3) return null;
-          return new Date(Number(parts[0]), Number(parts[1])-1, Number(parts[2]));
+        function rowHtml(t){
+          return `
+            <tr>
+              <td class="col-date">${t.date || ''}</td>
+              <td class="col-cat">${t.category || ''}</td>
+              <td class="col-name">${escapeHtml(t.name || '')}</td>
+              <td class="right col-amt">${Number(t.amount_kd || 0).toFixed(3)}</td>
+              <td class="right col-actions">
+                <form method="post" action="/transactions/${t.id}/delete" data-confirm="Delete this transaction?">
+                  <button class="danger btn" type="submit">Delete</button>
+                </form>
+              </td>
+            </tr>`;
         }
 
-        function apply(){
-          const term = (q?.value || '').trim().toLowerCase();
-          const cval = (cat?.value || '').trim();
-          const from = parseISO(fromEl?.value || '');
-          const to = parseISO(toEl?.value || '');
-          let shown = 0;
-
-          [...tbody.rows].forEach(tr => {
-            const desc = tr.querySelector('.col-name')?.textContent.toLowerCase() || '';
-            const c = tr.querySelector('.col-cat')?.textContent || '';
-            const dtxt = tr.querySelector('.col-date')?.textContent || '';
-            const d = parseISO(dtxt);
-
-            let match = (!term || desc.includes(term)) && (!cval || c === cval);
-            if (match && (from || to)) {
-              if (!d) match = false;
-              if (match && from && d < from) match = false;
-              if (match && to && d > to) match = false;
-            }
-
-            tr.style.display = match ? '' : 'none';
-            if (match) shown++;
-          });
-          if (count) count.textContent = shown ? `${shown} shown` : 'No matches';
+        function escapeHtml(s){
+          return String(s)
+            .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+            .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
         }
 
-        // listeners
-        q?.addEventListener('input', apply);
-        fromEl?.addEventListener('change', apply);
-        toEl?.addEventListener('change', apply);
-        cat?.addEventListener('change', apply);
-        clear?.addEventListener('click', () => {
-          if(q) q.value=''; if(cat) cat.value='';
-          if(fromEl) fromEl.value=''; if(toEl) toEl.value='';
-          apply();
+        function showMore(has){
+          if (!moreWrap) return;
+          if (has){
+            moreWrap.classList.add('show','fade-in');
+            // remove the animation class after it runs so future shows can animate again
+            setTimeout(() => moreWrap.classList.remove('fade-in'), 220);
+          } else {
+            moreWrap.classList.remove('show');
+          }
+        }
+
+        async function load({append=false} = {}){
+          if (state.loading) return;
+          state.loading = true;
+
+          try {
+            const params = new URLSearchParams();
+            if (state.q)   params.set('q', state.q);
+            if (state.cat) params.set('category', state.cat);
+            params.set('limit', String(state.limit));
+            params.set('offset', String(state.offset));
+
+            const res  = await fetch('/api/transactions/search?' + params.toString(), { headers: { 'Accept': 'application/json' }});
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+            const rows = data.items || [];
+            if (!append) tbody.innerHTML = '';
+
+            // render
+            const html = rows.map(rowHtml).join('');
+            tbody.insertAdjacentHTML('beforeend', html);
+
+            // wire confirm-on-delete for newly inserted forms
+            tbody.querySelectorAll('form[data-confirm]').forEach(f => {
+              if (f.__bound) return;
+              f.__bound = true;
+              f.addEventListener('submit', (e) => {
+                const msg = f.getAttribute('data-confirm') || 'Are you sure?';
+                if (!confirm(msg)) e.preventDefault();
+              });
+            });
+
+            state.hasMore = !!data.has_more;
+            showMore(state.hasMore);
+          } catch (e){
+            console.error(e);
+            showMore(false);
+          } finally {
+            state.loading = false;
+          }
+        }
+
+        // search handlers (if those inputs exist)
+        function resetAndLoad(){
+          state.offset = 0;
+          load({append:false});
+        }
+
+        qInput?.addEventListener('input', () => {
+          state.q = (qInput.value || '').trim();
+          resetAndLoad();
         });
 
-        // initial
-        apply();
+        catInput?.addEventListener('change', () => {
+          state.cat = (catInput.value || '').trim();
+          resetAndLoad();
+        });
+
+        // load more
+        btnMore?.addEventListener('click', () => {
+          if (!state.hasMore || state.loading) return;
+          state.offset += state.limit;
+          load({append:true});
+          // smooth scroll the newly added rows into view (optional)
+          setTimeout(() => {
+            moreWrap?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          }, 0);
+        });
+
+        // initial load
+        resetAndLoad();
       })();
+
     </script>
   </body>
 </html>

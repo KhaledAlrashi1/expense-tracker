@@ -8,6 +8,7 @@ from typing import List, Dict, Any, Tuple
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.sql import func
+from sqlalchemy import or_
 
 import sqlite3, re, shutil, tempfile
 from pathlib import Path
@@ -361,10 +362,9 @@ def register_routes(app: Flask) -> None:
                     db.session.rollback()
                     flash(f"Unexpected error: {e}", "danger")
 
-        # Page data (latest 100)
-        items: List[Transaction] = (
-            Transaction.query.order_by(Transaction.date.desc(), Transaction.id.desc()).limit(100).all()
-        )
+        # Page data
+        items: List[Transaction] = []
+
         categories: List[Category] = Category.query.order_by(Category.name.asc()).all()
         return render_template("transactions.html", items=items, categories=categories)
 
@@ -539,10 +539,41 @@ def register_routes(app: Flask) -> None:
         rows = db.session.query(ym.label("ym"), func.sum(Transaction.amount_kd)).group_by("ym").order_by("ym").all()
         return jsonify([{"month": ym_val, "total_kd": float(total)} for ym_val, total in rows])
 
+    # Legacy: keep for dashboard (returns an array)
     @app.route("/api/transactions")
     def api_transactions():
         items = Transaction.query.order_by(Transaction.date.desc(), Transaction.id.desc()).all()
         return jsonify([t.to_dict() for t in items])
+
+    # New: paginated + searchable (used by the Transactions page)
+    @app.route("/api/transactions/search")
+    def api_transactions_search():
+        q = (request.args.get("q") or "").strip()
+        cat = (request.args.get("category") or "").strip()
+        limit = request.args.get("limit", default=20, type=int)
+        offset = request.args.get("offset", default=0, type=int)
+
+        query = Transaction.query
+        if q:
+            like = f"%{q}%"
+            query = query.filter(or_(Transaction.name.ilike(like),
+                                    Transaction.category.ilike(like)))
+        if cat:
+            query = query.filter(Transaction.category == cat)
+
+        query = query.order_by(Transaction.date.desc(), Transaction.id.desc())
+        total = query.count()
+        items = query.offset(offset).limit(limit).all()
+
+        return jsonify({
+            "items": [t.to_dict() for t in items],
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "has_more": (offset + len(items) < total)
+        })
+
+
     
     @app.route("/messages/preview")
     def messages_preview():
