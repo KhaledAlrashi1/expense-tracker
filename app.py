@@ -573,6 +573,50 @@ def register_routes(app: Flask) -> None:
             "has_more": (offset + len(items) < total)
         })
 
+    @app.route("/api/transactions/by-category")
+    def api_transactions_by_category():
+        """
+        Query params:
+        - category (required)
+        - month=YYYY-MM (optional)
+        - q (optional, search in description/name)
+        - offset (default 0), limit (default 20)
+        """
+        category = (request.args.get("category") or "").strip()
+        if not category:
+            return jsonify({"error": "category is required"}), 400
+
+        limit = max(1, min(100, request.args.get("limit", default=20, type=int)))
+        offset = max(0, request.args.get("offset", default=0, type=int))
+        q = (request.args.get("q") or "").strip()
+        month = (request.args.get("month") or "").strip()  # YYYY-MM
+
+        query = Transaction.query.filter(Transaction.category == category)
+
+        if month:
+            ym = func.strftime("%Y-%m", Transaction.date)
+            query = query.filter(ym == month)
+
+        if q:
+            like = f"%{q}%"
+            query = query.filter(Transaction.name.ilike(like))
+
+        total = query.count()
+        items = (
+            query.order_by(Transaction.date.desc(), Transaction.id.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+
+        return jsonify({
+            "ok": True,
+            "category": category,
+            "month": month or None,
+            "items": [t.to_dict() for t in items],
+            "has_more": (offset + len(items)) < total,
+            "total": total
+        })
 
     
     @app.route("/messages/preview")

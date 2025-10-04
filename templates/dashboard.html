@@ -57,6 +57,62 @@
       .sparkcell { width: 140px; }
       .spark { width: 120px; height: 30px; display:block; margin-left:auto; }
       .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); border:0; }
+
+      #catMore { min-width: 120px; }
+
+      .modal-backdrop {
+        position: fixed; inset: 0; background: rgba(0,0,0,.55);
+        display: none; align-items: center; justify-content: center; z-index: 1000;
+      }
+      .modal-backdrop.open { display: flex; }
+      .modal {
+        width: min(1100px, 96vw); max-height: 86vh; overflow: hidden; border-radius: 14px;
+        background: #0e1a33; border: 1px solid #1f2a44; box-shadow: 0 12px 40px rgba(0,0,0,.45);
+        display: flex; flex-direction: column;
+      }
+
+      /* Buttons (same look as Transactions page) */
+      .btn{ background:#2b63ff; color:#fff; border:0; padding:8px 12px; border-radius:10px; font-weight:600; cursor:pointer; }
+      .btn:hover{ filter:brightness(1.05); }
+      .btn.ghost{ background:transparent; border:1px solid #2a3c67; }
+      .btn.small{ padding:6px 8px; font-size:12px; }
+
+      /* Modal polish */
+      .modal-backdrop{ position:fixed; inset:0; background:rgba(0,0,0,.55); display:none; align-items:center; justify-content:center; z-index:1000; backdrop-filter: blur(2px); }
+      .modal-backdrop.open{ display:flex; }
+      .modal{
+        width:min(1100px,96vw); max-height:86vh; overflow:hidden; border-radius:14px;
+        background:#0e1a33; border:1px solid #1f2a44; box-shadow:0 12px 40px rgba(0,0,0,.45);
+      }
+      .modal header{ display:flex; align-items:center; justify-content:space-between; padding:16px; border-bottom:1px solid #1f2a44; }
+      .modal h3{ margin:0; font-size:20px; color:#c6d4ff; }
+      .modal .body{ padding:0 16px 16px; display:flex; flex-direction:column; gap:10px; }
+      .modal .table-wrap{ max-height:56vh; border-radius:10px; border:1px solid #1f2a44; overflow:auto; }
+      .modal footer{ padding:14px 16px; border-top:1px solid #1f2a44; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; }
+
+      /* Nice little pop-in */
+      .modal-backdrop.open .modal{ animation: pop .18s ease-out; }
+      @keyframes pop{ from{ transform:translateY(6px) scale(.985); opacity:0 } to{ transform:none; opacity:1 } }
+
+      /* Table polish in modal */
+      .modal thead th{ position:sticky; top:0; background:#0e162b; z-index:1; text-align:left; font-weight:700; font-size:13px; color:#9fb0d9; padding:10px 8px; border-bottom:1px solid #1f2a44; }
+      .modal tbody td{ padding:10px 8px; border-bottom:1px dashed #1f2a44; font-size:14px; }
+      .modal tbody tr:nth-child(even){ background:rgba(255,255,255,0.02); }
+      .modal tbody tr:hover{ background:#0e1730; }
+      td.col-amt{ text-align:right; font-variant-numeric:tabular-nums; }
+
+      /* Meta pill + counters */
+      .pill{ padding:6px 10px; border-radius:999px; background:#0b1327; border:1px solid #2a3c67; font-size:12px; color:#9fb0d9; }
+      .muted{ color:#9fb0d9; }
+      .right{ text-align:right; }
+
+      /* Accent color from clicked slice */
+      :root{ --cat-accent:#2b63ff; }
+      .modal.accent{ box-shadow: inset 0 0 0 1px #1f2a44, 0 12px 40px rgba(0,0,0,.45); }
+      .modal.accent header{ box-shadow: inset 4px 0 0 var(--cat-accent); }
+      #catMeta{ border-color: rgba(255,255,255,.12); }
+
+
     </style>
     <!-- Chart.js CDN -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" crossorigin="anonymous"></script>
@@ -148,6 +204,37 @@
       </section>
     </main>
 
+    <div class="modal-backdrop" id="catBackdrop" aria-hidden="true">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="catTitle">
+        <header>
+          <h3 id="catTitle">Category</h3>
+          <button id="catClose" class="btn ghost">Close</button>
+        </header>
+        <div class="body">
+          <div class="pill" id="catMeta">—</div>
+          <div class="table-wrap" style="max-height: 56vh;">
+            <table>
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Description</th>
+                  <th class="right">Amount (KD)</th>
+                </tr>
+              </thead>
+              <tbody id="catTbody"></tbody>
+            </table>
+          </div>
+          <div id="catErr" class="err" style="display:none;"></div>
+        </div>
+        <footer>
+          <div class="muted" id="catHint">Showing 20 at a time.</div>
+          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <span class="pill" id="catCount">0 shown</span>
+            <button id="catMore" class="btn ghost">More</button>
+          </div>
+        </footer>
+      </div>
+    </div>
     <script>
       // ---- Helpers ----
       function fmt(n){ return (Number(n)||0).toFixed(3); }
@@ -208,6 +295,92 @@
       let catChart, monthChart, allMonthsChart;
       const sparkCharts = {}; // id -> Chart
 
+      // ===== Category modal (client-side paging, 20 at a time) =====
+      let currentYM = ''; // set in refreshForSelected()
+
+      const catBackdrop = document.getElementById('catBackdrop');
+      const catClose    = document.getElementById('catClose');
+      const catTitle    = document.getElementById('catTitle');
+      const catMeta     = document.getElementById('catMeta');
+      const catTbody    = document.getElementById('catTbody');
+      const catErr      = document.getElementById('catErr');
+      const catCount    = document.getElementById('catCount');
+      const catMore     = document.getElementById('catMore');
+
+      const catState = {
+        category: '',
+        month: '',
+        rows: [],     // filtered transactions (category + month)
+        shown: 0,
+        pageSize: 20,
+      };
+
+      function catOpen(){ catBackdrop.classList.add('open'); catBackdrop.setAttribute('aria-hidden','false'); }
+      function catCloseModal(){ catBackdrop.classList.remove('open'); catBackdrop.setAttribute('aria-hidden','true'); }
+      catClose?.addEventListener('click', catCloseModal);
+      catBackdrop?.addEventListener('click', (e)=>{ if(e.target===catBackdrop) catCloseModal(); });
+
+      function escapeHtml(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                                              .replace(/>/g,'&gt;').replace(/"/g,'&quot;')
+                                              .replace(/'/g,'&#39;'); }
+
+      function catRowHTML(t){
+        return `<tr>
+          <td class="col-date">${t.date || ''}</td>
+          <td class="col-name" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</td>
+          <td class="right col-amt">${fmt(t.amount_kd)}</td>
+        </tr>`;
+      }
+
+      function catRenderNext(){
+        catErr.style.display = 'none';
+        const start = catState.shown;
+        const end   = Math.min(catState.shown + catState.pageSize, catState.rows.length);
+        if (start >= end) return;
+
+        const slice = catState.rows.slice(start, end);
+        catTbody.insertAdjacentHTML('beforeend', slice.map(catRowHTML).join(''));
+        catState.shown = end;
+
+        // Update counters + More visibility
+        catCount.textContent = `${catState.shown} shown`;
+        catMore.style.display = (catState.shown < catState.rows.length) ? 'inline-block' : 'none';
+      }
+
+      catMore?.addEventListener('click', catRenderNext);
+
+      // Call this when a slice is clicked
+      function openCategoryTransactions(category){
+        catState.category = category;
+        catState.month    = currentYM;
+
+        // Filter from already-loaded allTxns (month + category), newest first
+        catState.rows = allTxns
+          .filter(t => t.category === category && (t.date||'').slice(0,7) === currentYM)
+          .sort((a,b) => {
+            // sort by date desc, then id desc if available
+            const ad = (a.date||''); const bd = (b.date||'');
+            if (ad !== bd) return bd.localeCompare(ad);
+            return (b.id||0) - (a.id||0);
+          });
+
+        // Reset UI
+        catTbody.innerHTML = '';
+        catState.shown = 0;
+        catTitle.textContent = `Transactions — ${category}`;
+        catMeta.textContent  = `${category} • ${currentYM}`;
+        catCount.textContent = `0 shown`;
+        catMore.style.display = catState.rows.length > 0 ? 'inline-block' : 'none';
+
+        if (catState.rows.length === 0) {
+          catErr.textContent = 'No transactions for this category in the selected month.';
+          catErr.style.display = 'block';
+        } else {
+          catRenderNext(); // first 20
+        }
+        catOpen();
+      }
+
       const selMonth = document.getElementById('selMonth');
       const btnThisMonth = document.getElementById('btnThisMonth');
 
@@ -249,22 +422,61 @@
         kpiTopSub.textContent = topCat === '—' ? '' : `KD ${fmt(topVal)} in ${ym}`;
       }
 
+      function applyCatAccent(color){
+        const modal = document.querySelector('#catBackdrop .modal');
+        if (!modal) return;
+        modal.classList.add('accent');
+        modal.style.setProperty('--cat-accent', color || '#2b63ff');
+        // optional: tint the meta pill border slightly
+        document.getElementById('catMeta').style.borderColor = color || '#2a3c67';
+      }
+
       function updateDonutFor(ym, monthTxns){
         const byCat = groupByCategory(monthTxns);
         const labels = Object.keys(byCat);
         const values = Object.values(byCat);
         catTitleSpan.textContent = ym;
 
-        const ctx = document.getElementById('catChart');
+        const canvas = document.getElementById('catChart');
         destroyChart(catChart);
-        if(values.length === 0){ catEmpty.hidden = false; return; }
+        if (values.length === 0) { catEmpty.hidden = false; return; }
         catEmpty.hidden = true;
-        catChart = new Chart(ctx, {
+
+        // Friendly palette (stable order)
+        const palette = [
+          '#4f46e5', '#06b6d4', '#22c55e', '#f59e0b', '#ef4444', '#a855f7',
+          '#14b8a6', '#eab308', '#f97316', '#10b981', '#3b82f6', '#db2777'
+        ];
+        const colors = labels.map((_, i) => palette[i % palette.length]);
+
+        canvas.style.cursor = 'pointer';
+
+        catChart = new Chart(canvas, {
           type: 'doughnut',
-          data: { labels, datasets: [{ label: 'KD', data: values }] },
-          options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
+          data: { labels, datasets: [{ label: 'KD', data: values, backgroundColor: colors, borderWidth: 0 }] },
+          options: {
+            responsive: true,
+            plugins: { legend: { position: 'bottom' } },
+            onClick: (evt, elements, chart) => {
+              let idx = null;
+              if (elements && elements.length) idx = elements[0].index ?? elements[0].dataIndex;
+              if (idx == null) {
+                const pts = chart.getElementsAtEventForMode(evt, 'nearest', { intersect: true }, true);
+                if (pts.length) idx = pts[0].index ?? pts[0].dataIndex;
+              }
+              if (idx == null) return;
+
+              const category = chart.data.labels[idx];
+              const color = chart.data.datasets[0].backgroundColor[idx];
+              applyCatAccent(color);
+              openCategoryTransactions(category);
+            }
+          }
         });
       }
+
+
+
 
       function updateTop5For(ym, monthTxns){
         const entries = Object.entries(groupByCategory(monthTxns)).sort((a,b)=> b[1]-a[1]);
@@ -456,18 +668,20 @@
         }
       }
 
-      async function refreshForSelected(){
-        const ym = selMonth.value;
-        const monthTxns = filterMonth(allTxns, ym);
-        updateKPIsFor(ym, monthTxns);
-        updateDonutFor(ym, monthTxns);
-        updateTop5For(ym, monthTxns);
+    async function refreshForSelected(){
+      const ym = selMonth.value;
+      currentYM = ym;          // ⇦ add this line
+      const monthTxns = filterMonth(allTxns, ym);
+      updateKPIsFor(ym, monthTxns);
+      updateDonutFor(ym, monthTxns);
+      updateTop5For(ym, monthTxns);
 
-        // MoM vs previous month
-        const prevYM = prevMonth(ym);
-        const prevTxns = filterMonth(allTxns, prevYM);
-        updateMoMFor(ym, monthTxns, prevTxns);
-      }
+      // MoM vs previous month...
+      const prevYM = prevMonth(ym);
+      const prevTxns = filterMonth(allTxns, prevYM);
+      updateMoMFor(ym, monthTxns, prevTxns);
+    }
+
 
       (async () => {
         // Load transactions once; compute buckets (keeps month totals in sync)
