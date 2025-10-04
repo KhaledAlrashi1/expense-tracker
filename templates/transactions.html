@@ -254,14 +254,9 @@
                 </label>
               </div>
               <div class="actions" style="margin-top:8px;">
-                <label style="display:flex; align-items:center; gap:8px; font-size:13px;">
-                  <input type="checkbox" id="msgUnparsed" checked />
-                  <!-- Include unparsed -->
-                </label>
                 <button type="submit" class="btn">Preview from Messages</button>
                 <span id="msgErr" class="err" style="display:none;"></span>
               </div>
-              <!-- <p class="hint">Tip: set <em>Since</em> to about a week ago; keep <em>Include unparsed</em> on so you can delete or edit rows in the preview.</p> -->
             </form>
           </section>
         </section>
@@ -610,108 +605,83 @@
         if (e.target === backdrop) closeModal();
       });
 
-      // === Import from Messages → Preview Modal (with smart fallback) ===
-      (function(){
-        const msgForm = document.getElementById('msgForm');
-        if (!msgForm) return;
+    // === Import from Messages → Preview Modal (always include all messages) ===
+    (function(){
+      const msgForm = document.getElementById('msgForm');
+      if (!msgForm) return;
 
-        const senderEl = document.getElementById('msgSender');
-        const sinceEl  = document.getElementById('msgSince');
-        const limitEl  = document.getElementById('msgLimit');
-        const unparsedEl = document.getElementById('msgUnparsed');
-        const msgErr   = document.getElementById('msgErr');
+      const senderEl = document.getElementById('msgSender');
+      const sinceEl  = document.getElementById('msgSince');
+      const limitEl  = document.getElementById('msgLimit');
+      const msgErr   = document.getElementById('msgErr');
 
-        // Prefill "Since" = 7 days ago if empty
-        (function initSince(){
-          if (!sinceEl.value){
-            const now = new Date();
-            const weekAgo = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7);
-            const mm = String(weekAgo.getMonth()+1).padStart(2,'0');
-            const dd = String(weekAgo.getDate()).padStart(2,'0');
-            sinceEl.value = `${weekAgo.getFullYear()}-${mm}-${dd}`;
-          }
-        })();
-
-        msgForm.addEventListener('submit', async (e) => {
-          e.preventDefault();
-          msgErr.style.display = 'none'; msgErr.textContent = '';
-
-          const sender = (senderEl.value || 'KFH').trim();
-          const since  = (sinceEl.value || '').trim();
-          const limit  = parseInt(limitEl.value || '50', 10);
-
-          const buildParams = (opts = {}) => {
-            const p = new URLSearchParams();
-            if (sender) p.set('sender', sender);
-            const sinceVal = (Object.prototype.hasOwnProperty.call(opts, 'since') ? opts.since : since);
-            if (sinceVal) p.set('since', sinceVal);
-            if (Number.isFinite(limit) && limit > 0) p.set('limit', String(limit));
-            if (unparsedEl.checked || opts.forceUnparsed) p.set('include_unparsed', '1');
-            if (opts.maxFetch) p.set('max_fetch', String(opts.maxFetch));
-            return p;
-          };
-
-          async function load(params, note){
-            const res = await fetch('/messages/preview?' + params.toString(), { headers: { 'Accept':'application/json' }});
-            const data = await res.json();
-            if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-            const rows = data.rows || [];
-            if (rows.length > 0){
-              previewRows = rows;
-              if (typeof data.scanned !== 'undefined' && typeof data.parsed !== 'undefined') {
-                previewMeta.textContent = `Previewing ${rows.length} row(s) • scanned ${data.scanned}, parsed ${data.parsed}` + (data.unparsed_included ? ' • incl. unparsed' : '') + (note ? ` • ${note}` : '');
-              } else {
-                previewMeta.textContent = `Previewing ${rows.length} row(s)` + (note ? ` • ${note}` : '');
-              }
-              renderPreviewTable(previewRows, /*meta*/ null);
-              openModal();
-              return true;
-            }
-            return false;
-          }
-
-          try {
-            // 1) Try exactly what you asked for
-            if (await load(buildParams(), 'from Messages')) return;
-
-            // 2) Fallback: drop date filter + force unparsed + widen scan window
-            const maxFetch = Math.max((limit || 50) * 5, 1000);
-            const p2 = buildParams({ since: '', forceUnparsed: true, maxFetch });
-            if (await load(p2, 'broadened (no date filter)')) return;
-
-            msgErr.textContent = 'No rows found. Try clearing “Since”, increasing Limit, or opening the KFH conversation in Messages to pull more history locally.';
-            msgErr.style.display = 'inline';
-          } catch (err) {
-            console.error(err);
-            msgErr.textContent = String(err.message || err);
-            msgErr.style.display = 'inline';
-          }
-        });
+      // Prefill "Since" = 7 days ago if empty (you can clear it to fetch all)
+      (function initSince(){
+        if (!sinceEl.value){
+          const now = new Date();
+          const weekAgo = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7);
+          const mm = String(weekAgo.getMonth()+1).padStart(2,'0');
+          const dd = String(weekAgo.getDate()).padStart(2,'0');
+          sinceEl.value = `${weekAgo.getFullYear()}-${mm}-${dd}`;
+        }
       })();
 
-      // CSV/Excel upload → preview modal
-      uploadForm.addEventListener('submit', async (e) => {
+      msgForm.addEventListener('submit', async (e) => {
         e.preventDefault();
-        uploadErr.style.display = 'none'; uploadErr.textContent = '';
-        const file = fileInput.files && fileInput.files[0];
-        if (!file) { uploadErr.textContent = 'Please choose a file.'; uploadErr.style.display = 'inline'; return; }
+        msgErr.style.display = 'none'; msgErr.textContent = '';
 
-        const fd = new FormData();
-        fd.append('file', file);
-        try {
-          const res = await fetch('/transactions/upload-preview', { method: 'POST', body: fd });
+        const sender = (senderEl.value || 'KFH').trim();
+        const since  = (sinceEl.value || '').trim();
+        const limit  = parseInt(limitEl.value || '50', 10);
+
+        const buildParams = (opts = {}) => {
+          const p = new URLSearchParams();
+          if (sender) p.set('sender', sender);
+          const sinceVal = (Object.prototype.hasOwnProperty.call(opts, 'since') ? opts.since : since);
+          if (sinceVal) p.set('since', sinceVal);
+          if (Number.isFinite(limit) && limit > 0) p.set('limit', String(limit));
+          if (opts.maxFetch) p.set('max_fetch', String(opts.maxFetch));
+          return p;
+        };
+
+        async function load(params, note){
+          const res = await fetch('/messages/preview?' + params.toString(), { headers: { 'Accept':'application/json' }});
           const data = await res.json();
           if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+          const rows = data.rows || [];
+          if (rows.length > 0){
+            previewRows = rows;
+            if (typeof data.scanned !== 'undefined') {
+              previewMeta.textContent = `Previewing ${rows.length} row(s) • scanned ${data.scanned}` + (note ? ` • ${note}` : '');
+            } else {
+              previewMeta.textContent = `Previewing ${rows.length} row(s)` + (note ? ` • ${note}` : '');
+            }
+            renderPreviewTable(previewRows, /*meta*/ null);
+            openModal();
+            return true;
+          }
+          return false;
+        }
 
-          previewRows = data.preview_rows || [];
-          renderPreviewTable(previewRows, { skipped: data.skipped || 0, capped: !!data.capped });
-          openModal();
+        try {
+          // 1) Try with current filters
+          if (await load(buildParams(), 'from Messages')) return;
+
+          // 2) Fallback: drop date filter and widen scan
+          const maxFetch = Math.max((limit || 50) * 5, 2000);
+          const p2 = buildParams({ since: '', maxFetch });
+          if (await load(p2, 'broadened (no date filter)')) return;
+
+          msgErr.textContent = 'No rows found. Try clearing “Since”, increasing Limit, or opening the KFH conversation in Messages to pull more history locally.';
+          msgErr.style.display = 'inline';
         } catch (err) {
           console.error(err);
-          uploadErr.textContent = String(err.message || err);
-          uploadErr.style.display = 'inline';
+          msgErr.textContent = String(err.message || err);
+          msgErr.style.display = 'inline';
         }
       });
+    })();
+
 
       // === Lightweight table filter (search + date range + category) ===
       (function(){
